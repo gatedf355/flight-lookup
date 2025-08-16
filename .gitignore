@@ -1,23 +1,14 @@
-# secrets
 .env
 .env.*.local
 *.env
 server/.env*
 frontend/.env*
 web/.env*
-
-# node/react
 node_modules/
 dist/
 build/
-
-# java
 target/
 .gradle/
 out/
-
-# logs & OS cruft
 *.log
-npm-debug.log*
-yarn-error.log*
 .DS_Store
