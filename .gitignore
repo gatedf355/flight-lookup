@@ -1,21 +1,23 @@
-
 # secrets
 .env
 .env.*.local
+*.env
+server/.env*
+frontend/.env*
+web/.env*
 
 # node/react
 node_modules/
 dist/
 build/
 
-# java (maven/gradle)
+# java
 target/
 .gradle/
+out/
 
-# logs
+# logs & OS cruft
 *.log
 npm-debug.log*
 yarn-error.log*
-
-# macOS
 .DS_Store
