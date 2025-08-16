@@ -1,0 +1,20 @@
+:root {
+  --bg: #f7fafc;
+  --card: #ffffff;
+  --text: #0f172a;
+  --sub: #475569;
+  --primary: #7dd3fc;
+  --success: #a7f3d0;
+  --warning: #fde68a;
+  --danger: #fecaca;
+}
+.dark {
+  --bg: #0b1020;
+  --card: #0f172a;
+  --text: #e5e7eb;
+  --sub: #9ca3af;
+  --primary: #38bdf8;
+  --success: #34d399;
+  --warning: #f59e0b;
+  --danger: #f87171;
+}

@@ -1,0 +1,19 @@
+{
+  "name": "flightlookup",
+  "version": "1.0.0",
+  "description": "Flight lookup application with FR24 API integration",
+  "scripts": {
+    "dev:backend": "cd server && npm run dev",
+    "dev:frontend": "cd web && npm run dev",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "install:all": "npm install && cd server && npm install && cd ../web && npm install",
+    "build": "cd web && npm run build",
+    "preview": "cd web && npm run preview"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "keywords": ["flight", "lookup", "fr24", "api"],
+  "author": "",
+  "license": "ISC"
+}

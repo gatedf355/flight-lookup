@@ -1,0 +1,15 @@
+{
+  "watch": ["index.ts", "middleware/**/*.ts", "routes/**/*.ts", "utils/**/*.ts", "logger.ts"],
+  "ext": "ts,json",
+  "delay": "200",
+  "exec": "npm run build && node dist/index.js",
+  "env": { "NODE_ENV": "development" },
+  "ignore": [
+    "node_modules/**",
+    "../web/**",
+    ".git/**",
+    "**/*.log",
+    "**/dist/**",
+    "../**/.next/**"
+  ]
+}

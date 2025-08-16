@@ -1,0 +1,21 @@
+
+# secrets
+.env
+.env.*.local
+
+# node/react
+node_modules/
+dist/
+build/
+
+# java (maven/gradle)
+target/
+.gradle/
+
+# logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# macOS
+.DS_Store
