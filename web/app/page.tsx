@@ -1,13 +1,20 @@
 "use client"
-import { useState, useEffect } from "react"
-import { Button } from "@/components/ui/button"
+
+import * as React from "react"
+import { fetchFlight } from "@/lib/api"
 import { Input } from "@/components/ui/input"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Separator } from "@/components/ui/separator"
+import { Button } from "@/components/ui/button"
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Separator } from "@/components/ui/separator"
+import { Progress } from "@/components/ui/progress"
+import { Badge } from "@/components/ui/badge"
+import { BadgeStatus } from "@/components/ui/badge-status"
+import { ProgressWithLabels } from "@/components/ui/progress-with-labels"
+import { TimeAgo } from "@/components/ui/time-ago"
+import { MapShell } from "@/components/ui/map-shell"
+import { useHotkeys } from "@/hooks/use-hotkeys"
+import { useTheme } from "next-themes"
 import {
   Plane,
   Search,
@@ -24,61 +31,44 @@ import {
   Filter,
   X,
 } from "lucide-react"
-import { useTheme } from "next-themes"
-import { BadgeStatus } from "@/components/ui/badge-status"
-import { ProgressWithLabels } from "@/components/ui/progress-with-labels"
-import { TimeAgo } from "@/components/ui/time-ago"
-import { MapShell } from "@/components/ui/map-shell"
-import { useHotkeys } from "@/hooks/use-hotkeys"
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
-// Mock flight data with timestamp
-const mockFlightData = {
-  callsign: "THY8DE",
-  fr24Id: "3bc32052",
-  aircraftHex: "4BB0E8",
-  squawk: "2731",
-  status: "ENROUTE",
-  position: {
-    lat: 65.577,
-    lon: -12.428,
-    altitude: "FL369",
-    groundSpeed: "454 kt",
-    verticalSpeed: "+320 ft/min",
-    track: "298°",
-  },
-  lastUpdate: Date.now() - 120000, // 2 minutes ago
-  dataSource: "ADSB",
-  airline: "Turkish Airlines",
-  aircraft: "Boeing 777-300ER",
-  route: "IST → JFK",
-  progress: 67,
-  origin: "IST",
-  destination: "JFK",
-}
+type FlightResponse = any // backend shape; we render defensively
 
 export default function FlightLookup() {
-  const [searchQuery, setSearchQuery] = useState("")
-  const [flightData, setFlightData] = useState(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const [autoRefresh, setAutoRefresh] = useState(true)
-  const [units, setUnits] = useState({ altitude: "ft", speed: "kt", distance: "nm" })
-  const [jsonFilter, setJsonFilter] = useState("")
+  const [ident, setIdent] = React.useState("")
+  const [loading, setLoading] = React.useState(false)
+  const [data, setData] = React.useState<FlightResponse | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+  const [showRaw, setShowRaw] = React.useState(false)
+  const [jsonFilter, setJsonFilter] = React.useState("")
   const { theme, setTheme } = useTheme()
-  const [mounted, setMounted] = useState(false)
+  const [mounted, setMounted] = React.useState(false)
 
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [jsonModalOpen, setJsonModalOpen] = useState(false)
+  // Settings (wire to your Settings panel/store if exists)
+  const [autoRefresh, setAutoRefresh] = React.useState(true)       // default 5 min
+  const [lowCostMode, setLowCostMode] = React.useState(false)      // disables auto-refresh
+  const [units, setUnits] = React.useState({ altitude: "ft", speed: "kt", distance: "nm" })
+  const REFRESH_MS = 5 * 60 * 1000
 
-  useEffect(() => {
+  const [settingsOpen, setSettingsOpen] = React.useState(false)
+
+  React.useEffect(() => {
     setMounted(true)
     document.documentElement.style.setProperty("--color-primary", "hsl(24, 95%, 53%)")
     document.documentElement.style.setProperty("--color-accent", "hsl(43, 96%, 56%)")
+  }, [])
 
+  // Load saved units after mounting to prevent hydration mismatch
+  React.useEffect(() => {
+    if (!mounted) return
+    
     const savedUnits = localStorage.getItem("flight-units")
     if (savedUnits) {
       setUnits(JSON.parse(savedUnits))
     }
-  }, [])
+  }, [mounted])
 
   useHotkeys([
     {
@@ -94,7 +84,7 @@ export default function FlightLookup() {
       key: "Enter",
       callback: () => {
         if (document.activeElement?.tagName === "INPUT") {
-          handleSearch()
+          doSearch()
         }
       },
       preventDefault: false,
@@ -102,22 +92,42 @@ export default function FlightLookup() {
     {
       key: "Escape",
       callback: () => {
-        setJsonModalOpen(false)
+        setShowRaw(false)
         setSettingsOpen(false)
       },
     },
   ])
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) return
-
-    setIsLoading(true)
-    // Simulate API call
-    setTimeout(() => {
-      setFlightData(mockFlightData)
-      setIsLoading(false)
-    }, 1000)
+  function normalizeIdent(input: string) {
+    const raw = input.trim().replace(/\s+/g, "")
+    // Let backend do the heavy lifting; just pass through
+    return raw.toUpperCase()
   }
+
+  const doSearch = React.useCallback(async (value?: string) => {
+    const q = normalizeIdent(value ?? ident)
+    if (!q) return
+    setLoading(true)
+    setError(null)
+
+    try {
+      // Use the centralized API helper
+      const res = await fetchFlight(q)
+      setData(res)
+    } catch (e: any) {
+      setData(null)
+      setError(e?.message || "Failed to fetch flight")
+    } finally {
+      setLoading(false)
+    }
+  }, [ident])
+
+  // Auto-refresh every 5 min unless low-cost mode
+  React.useEffect(() => {
+    if (!autoRefresh || lowCostMode || !data) return
+    const t = setInterval(() => doSearch(), REFRESH_MS)
+    return () => clearInterval(t)
+  }, [autoRefresh, lowCostMode, data, doSearch])
 
   const saveSettings = (newUnits: typeof units) => {
     setUnits(newUnits)
@@ -125,11 +135,23 @@ export default function FlightLookup() {
   }
 
   const filteredJson = jsonFilter
-    ? JSON.stringify(flightData, null, 2)
+    ? JSON.stringify(data, null, 2)
         .split("\n")
         .filter((line) => line.toLowerCase().includes(jsonFilter.toLowerCase()))
         .join("\n")
-    : JSON.stringify(flightData, null, 2)
+    : JSON.stringify(data, null, 2)
+
+  // Prevent hydration mismatch by only rendering after mount
+  if (!mounted) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[var(--color-primary)] mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-background transition-colors duration-300">
@@ -255,7 +277,7 @@ export default function FlightLookup() {
                           <div className="space-y-1">
                             <label className="text-sm font-medium text-foreground">Auto-refresh</label>
                             <p className="text-xs text-muted-foreground">
-                              Automatically update flight data every 30 seconds
+                              Automatically update flight data every 5 minutes
                             </p>
                           </div>
                           <div className="relative">
@@ -282,6 +304,44 @@ export default function FlightLookup() {
                                 <div
                                   className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-all duration-200 transform ${
                                     autoRefresh ? "translate-x-6" : "translate-x-0"
+                                  }`}
+                                />
+                              </div>
+                            </label>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between p-4 bg-muted/20 rounded-lg hover:bg-muted/30 transition-all duration-300">
+                          <div className="space-y-1">
+                            <label className="text-sm font-medium text-foreground">Low-cost mode</label>
+                            <p className="text-xs text-muted-foreground">
+                              Disables auto-refresh to reduce API calls
+                            </p>
+                          </div>
+                          <div className="relative">
+                            <input
+                              type="checkbox"
+                              checked={lowCostMode}
+                              onChange={(e) => setLowCostMode(e.target.checked)}
+                              className="sr-only"
+                              id="low-cost-toggle"
+                            />
+                            <label
+                              htmlFor="low-cost-toggle"
+                              className={`flex items-center cursor-pointer transition-all duration-200 ${
+                                lowCostMode
+                                  ? "text-[var(--color-primary)]"
+                                  : "text-muted-foreground hover:text-foreground"
+                              }`}
+                            >
+                              <div
+                                className={`relative w-12 h-6 rounded-full transition-all duration-200 ${
+                                  lowCostMode ? "bg-[var(--color-primary)]" : "bg-muted border-2 border-border"
+                                }`}
+                              >
+                                <div
+                                  className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-all duration-200 transform ${
+                                    lowCostMode ? "translate-x-6" : "translate-x-0"
                                   }`}
                                 />
                               </div>
@@ -327,21 +387,22 @@ export default function FlightLookup() {
                 <div className="flex-1 relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-muted-foreground transition-colors duration-200" />
                   <Input
-                    placeholder="Enter flight number (e.g., UAL1409, DAL934, AS1154...)"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                    placeholder="UAL1409 or UA1409"
+                    value={ident}
+                    onChange={(e) => setIdent(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") doSearch(); }}
+                    disabled={loading}
                     className="pl-10 h-12 text-lg !border-[var(--color-primary)]/20 focus:!ring-1 focus:!ring-[var(--color-primary)]/40 focus:!outline-none focus:!border-[var(--color-primary)]/40 transition-all duration-200 hover:!border-[var(--color-primary)]/25 focus-visible:!ring-1 focus-visible:!ring-[var(--color-primary)]/40 focus-visible:!ring-offset-0 !shadow-none rounded-lg"
                     aria-label="Flight search input"
                   />
                 </div>
                 <Button
-                  onClick={handleSearch}
-                  disabled={isLoading}
+                  onClick={() => doSearch()}
+                  disabled={loading || !ident.trim()}
                   className="h-12 px-8 bg-[var(--color-primary)] hover:bg-[var(--color-primary)]/90 text-white font-semibold transition-all duration-200 hover:shadow-lg hover:scale-105 disabled:hover:scale-100 shadow-lg rounded-lg"
                   aria-label="Search for flight"
                 >
-                  {isLoading ? (
+                  {loading ? (
                     <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
                   ) : (
                     <>
@@ -350,29 +411,43 @@ export default function FlightLookup() {
                     </>
                   )}
                 </Button>
+                <Dialog open={showRaw} onOpenChange={setShowRaw}>
+                  <DialogTrigger asChild>
+                    <Button variant="secondary" disabled={!data}>Raw JSON</Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-3xl">
+                    <DialogHeader><DialogTitle>Raw Flight Data</DialogTitle></DialogHeader>
+                    <pre className="max-h-[60vh] overflow-auto text-sm">
+                      {data ? JSON.stringify(data, null, 2) : "No data"}
+                    </pre>
+                  </DialogContent>
+                </Dialog>
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {flightData && (
+        {error && (
+          <Card className="border-red-500/40">
+            <CardHeader><CardTitle>Error</CardTitle></CardHeader>
+            <CardContent><p className="text-sm text-red-500">{error}</p></CardContent>
+          </Card>
+        )}
+
+        {data && (
           <div className="max-w-7xl mx-auto animate-in fade-in duration-500">
             <div className="mb-6">
               <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
                 <div>
                   <h3 className="text-3xl font-sans font-semibold text-foreground mb-2 tracking-tight">
-                    Flight {flightData.callsign}
+                    Flight {data?.summary?.callsign ?? "Unknown flight"}
                   </h3>
                   <div className="flex flex-wrap items-center gap-4 text-muted-foreground">
-                    <span>{flightData.airline}</span>
-                    <Separator orientation="vertical" className="h-4 hidden sm:block" />
-                    <span>{flightData.aircraft}</span>
-                    <Separator orientation="vertical" className="h-4 hidden sm:block" />
-                    <span>{flightData.route}</span>
+                    <span>{data?.summary?.status && <Badge variant="secondary">{data.summary.status}</Badge>}</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <BadgeStatus status={flightData.status} />
+                  {data?.summary?.status && <BadgeStatus status={data.summary.status} />}
                 </div>
               </div>
             </div>
@@ -386,73 +461,49 @@ export default function FlightLookup() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                  <ProgressWithLabels
-                    percentage={flightData.progress}
-                    origin={flightData.origin}
-                    destination={flightData.destination}
-                  />
+                  {/* Route */}
+                  <div className="text-sm text-muted-foreground">
+                    {data?.originName || data?.summary?.orig_icao ? (
+                      <span>{data.originName ?? data.summary.orig_icao}</span>
+                    ) : null}
+                    {" "}
+                    {data?.destinationName || data?.summary?.dest_icao ? (
+                      <span>→ {data.destinationName ?? data.summary.dest_icao}</span>
+                    ) : null}
+                  </div>
+
+                  <Separator />
+
+                  {/* Progress */}
+                  {typeof data?.progressPercent === "number" && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span>Progress</span>
+                        <span>{data.progressPercent}%</span>
+                      </div>
+                      <Progress value={Math.max(0, Math.min(100, data.progressPercent))} />
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Squawk</div>
-                        <div className="text-lg font-bold text-foreground">{flightData.squawk}</div>
-                      </div>
-                    </Card>
-
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                          Altitude
-                        </div>
-                        <div className="text-lg font-bold text-foreground">{flightData.position.altitude}</div>
-                      </div>
-                    </Card>
-
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                          Ground Speed
-                        </div>
-                        <div className="text-lg font-bold text-foreground">{flightData.position.groundSpeed}</div>
-                      </div>
-                    </Card>
-
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Track</div>
-                        <div className="text-lg font-bold text-foreground flex items-center justify-center gap-1">
-                          <Navigation className="h-4 w-4" />
-                          {flightData.position.track}
+                    {/* Last position */}
+                    {data?.lastPosition && (
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>Lat/Lon: <span className="font-mono">{data.lastPosition.lat}, {data.lastPosition.lon}</span></div>
+                        <div>Alt: <span className="font-mono">{data.lastPosition.alt} ft</span></div>
+                        <div>GS: <span className="font-mono">{data.lastPosition.gspeed} kt</span></div>
+                        <div>Track: <span className="font-mono">{data.lastPosition.track}°</span></div>
+                        <div className="col-span-2">
+                          Updated: {data.lastPosition.timestamp ? <TimeAgo timestamp={data.lastPosition.timestamp} /> : "—"}
                         </div>
                       </div>
-                    </Card>
-
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                          Vertical Speed
-                        </div>
-                        <div className="text-lg font-bold text-foreground">{flightData.position.verticalSpeed}</div>
-                      </div>
-                    </Card>
-
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                          Position
-                        </div>
-                        <div className="text-sm font-bold text-foreground">
-                          {flightData.position.lat}, {flightData.position.lon}
-                        </div>
-                      </div>
-                    </Card>
+                    )}
                   </div>
 
                   <div className="mt-4 pt-4 border-t border-border">
                     <div className="flex justify-center items-center text-sm">
                       <span className="text-muted-foreground">
-                        Last Update: <TimeAgo timestamp={flightData.lastUpdate} />
+                        Last Update: {data?.lastPosition?.timestamp ? <TimeAgo timestamp={data.lastPosition.timestamp} /> : "—"}
                       </span>
                     </div>
                   </div>
@@ -471,7 +522,7 @@ export default function FlightLookup() {
                     <div className="text-center space-y-4">
                       <div className="p-4 bg-secondary/10 rounded-lg hover:bg-secondary/20 transition-all duration-300 border border-transparent hover:border-[var(--color-primary)]/20">
                         <Gauge className="h-8 w-8 text-[var(--color-accent)] mx-auto mb-2 animate-pulse" />
-                        <BadgeStatus status={flightData.status} className="mb-2" />
+                        {data?.summary?.status && <BadgeStatus status={data.summary.status} className="mb-2" />}
                         <p className="text-sm text-muted-foreground">Current Status</p>
                       </div>
                     </div>
@@ -498,7 +549,7 @@ export default function FlightLookup() {
                       Flight History
                     </Button>
 
-                    <Dialog open={jsonModalOpen} onOpenChange={setJsonModalOpen}>
+                    <Dialog open={showRaw} onOpenChange={setShowRaw}>
                       <DialogTrigger asChild>
                         <Button
                           variant="outline"
@@ -544,7 +595,7 @@ export default function FlightLookup() {
           </div>
         )}
 
-        {!flightData && !isLoading && (
+        {!data && !loading && (
           <div className="text-center py-16" role="region" aria-label="Empty state">
             <div className="p-4 bg-muted/50 rounded-full w-20 h-20 mx-auto mb-6 flex items-center justify-center hover:bg-muted/70 transition-all duration-300 hover:scale-105">
               <Plane className="h-10 w-10 text-muted-foreground" />

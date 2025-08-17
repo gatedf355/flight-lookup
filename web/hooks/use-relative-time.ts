@@ -4,8 +4,15 @@ import { useState, useEffect } from "react"
 
 export function useRelativeTime(timestamp: string | number) {
   const [relativeTime, setRelativeTime] = useState("")
+  const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  useEffect(() => {
+    if (!mounted) return
+
     const updateRelativeTime = () => {
       const now = Date.now()
       const time = typeof timestamp === "string" ? new Date(timestamp).getTime() : timestamp
@@ -31,7 +38,10 @@ export function useRelativeTime(timestamp: string | number) {
     const interval = setInterval(updateRelativeTime, 30000) // Update every 30 seconds
 
     return () => clearInterval(interval)
-  }, [timestamp])
+  }, [timestamp, mounted])
 
+  // Return empty string during SSR to prevent hydration mismatch
+  if (!mounted) return ""
+  
   return relativeTime
 }

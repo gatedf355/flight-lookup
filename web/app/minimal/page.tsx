@@ -19,7 +19,7 @@ const mockFlightData = {
 
 export default function MinimalFlightLookup() {
   const [searchQuery, setSearchQuery] = useState("")
-  const [flightData, setFlightData] = useState(null)
+  const [flightData, setFlightData] = useState<typeof mockFlightData | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
   const handleSearch = async () => {
