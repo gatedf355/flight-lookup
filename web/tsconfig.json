@@ -8,8 +8,22 @@
     "strict": true,
     "baseUrl": ".",
     "paths": { "@/*": ["./*"] },
-    "types": ["node"]
+    "types": ["node"],
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "allowJs": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "incremental": true,
+    "plugins": [{ "name": "next" }]
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules"]
+  "include": [
+    "next-env.d.ts",
+    ".next/types/**/*.ts",
+    "app/**/*",
+    "components/**/*",
+    "lib/**/*"
+  ],
+  "exclude": ["node_modules", "components/ui/**", "hooks/**"]
 }
