@@ -8,8 +8,12 @@ const nextConfig = {
     return config
   },
   async rewrites() {
+    const backend = process.env.BACKEND_URL
     if (process.env.NODE_ENV === 'development') {
       return [{ source: '/api/:path*', destination: 'http://localhost:4000/api/:path*' }]
+    }
+    if (backend) {
+      return [{ source: '/api/:path*', destination: `${backend}/api/:path*` }]
     }
     return []
   },
