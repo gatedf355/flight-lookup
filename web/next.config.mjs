@@ -9,9 +9,8 @@ const nextConfig = {
     if (process.env.NODE_ENV === 'development') {
       return [{ source: '/api/:path*', destination: 'http://localhost:4000/api/:path*' }]
     }
-    const raw = process.env.BACKEND_URL || ''
-    const base = raw.startsWith('http') ? raw : (raw ? `https://${raw}` : '')
-    return base ? [{ source: '/api/:path*', destination: `${base}/api/:path*` }] : []
+    const backend = process.env.BACKEND_URL
+    return backend ? [{ source: '/api/:path*', destination: `${backend}/api/:path*` }] : []
   },
 }
 export default nextConfig

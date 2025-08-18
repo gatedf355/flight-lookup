@@ -30,6 +30,7 @@ import { ProgressWithLabels } from "@/components/ui/progress-with-labels"
 import { TimeAgo } from "@/components/ui/time-ago"
 import { MapShell } from "@/components/ui/map-shell"
 import { useHotkeys } from "@/hooks/use-hotkeys"
+import { fetchFlight } from '@/lib/api'
 
 // Mock flight data with timestamp
 const mockFlightData = {
@@ -60,6 +61,7 @@ export default function FlightLookup() {
   const [searchQuery, setSearchQuery] = useState("")
   const [flightData, setFlightData] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [units, setUnits] = useState({ altitude: "ft", speed: "kt", distance: "nm" })
   const [jsonFilter, setJsonFilter] = useState("")
@@ -109,14 +111,23 @@ export default function FlightLookup() {
   ])
 
   const handleSearch = async () => {
-    if (!searchQuery.trim()) return
-
+    const q = searchQuery.trim()
+    if (!q) return
     setIsLoading(true)
-    // Simulate API call
-    setTimeout(() => {
-      setFlightData(mockFlightData as any)
+    setError(null)
+    try {
+      const data = await fetchFlight(q)
+      setFlightData(data) // expect {summary, progressPercent, lastPosition, ...}
+    } catch (e: any) {
+      const msg = String(e?.message || '')
+      if (/404/.test(msg)) setError('Flight not found or inactive')
+      else if (/401|403/.test(msg)) setError('Auth problem with flight data service')
+      else if (/429/.test(msg)) setError('Rate limited—please wait a bit')
+      else setError('Internal Server Error')
+      setFlightData(null)
+    } finally {
       setIsLoading(false)
-    }, 1000)
+    }
   }
 
   const saveSettings = (newUnits: typeof units) => {
