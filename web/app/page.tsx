@@ -58,7 +58,7 @@ const mockFlightData = {
 
 export default function FlightLookup() {
   const [searchQuery, setSearchQuery] = useState("")
-  const [flightData, setFlightData] = useState(null)
+  const [flightData, setFlightData] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [units, setUnits] = useState({ altitude: "ft", speed: "kt", distance: "nm" })
@@ -114,7 +114,7 @@ export default function FlightLookup() {
     setIsLoading(true)
     // Simulate API call
     setTimeout(() => {
-      setFlightData(mockFlightData)
+      setFlightData(mockFlightData as any)
       setIsLoading(false)
     }, 1000)
   }
