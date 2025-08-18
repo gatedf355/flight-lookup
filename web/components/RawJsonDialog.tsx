@@ -1,7 +1,6 @@
 'use client'
 import * as Dialog from '@radix-ui/react-dialog'
 import { useState } from 'react'
-
 export function RawJsonDialog({ data }: { data: unknown }) {
   const [open, setOpen] = useState(false)
   const json = data ? JSON.stringify(data, null, 2) : '{}'

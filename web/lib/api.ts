@@ -1,4 +1,5 @@
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? ''
+
 function buildUrl(path: string, params: Record<string, string>) {
   const origin = typeof window === 'undefined' ? BASE : (BASE || window.location.origin)
   const url = new URL(path, origin)
