@@ -1,5 +1,5 @@
 "use client"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -26,35 +26,54 @@ import {
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { BadgeStatus } from "@/components/ui/badge-status"
-import { ProgressWithLabels } from "@/components/ui/progress-with-labels"
+
 import { TimeAgo } from "@/components/ui/time-ago"
 import { MapShell } from "@/components/ui/map-shell"
 import { useHotkeys } from "@/hooks/use-hotkeys"
 import { fetchFlight } from '@/lib/api'
+import RouteProgress from "@/components/RouteProgress"
+
+
+
+// Helper function to format time based on user preference
+const formatTime = (timestamp: string | number, timezone: string) => {
+  if (!timestamp) return 'N/A'
+  
+  try {
+    const date = new Date(timestamp)
+    if (timezone === 'local') {
+      return date.toLocaleString()
+    } else {
+      return date.toISOString().replace('T', ' ').substring(0, 19) + ' UTC'
+    }
+  } catch (error) {
+    return 'Invalid time'
+  }
+}
 
 // Mock flight data with timestamp
 const mockFlightData = {
-  callsign: "THY8DE",
-  fr24Id: "3bc32052",
-  aircraftHex: "4BB0E8",
-  squawk: "2731",
-  status: "ENROUTE",
-  position: {
+  summary: {
+    callsign: "THY8DE",
+    fr24_id: "3bc32052",
+    status: "ENROUTE"
+  },
+  lastPosition: {
     lat: 65.577,
     lon: -12.428,
     altitude: "FL369",
     groundSpeed: "454 kt",
     verticalSpeed: "+320 ft/min",
     track: "298°",
+    squawk: "2731",
+    type: "Boeing 777-300ER",
+    timestamp: Date.now() - 120000
   },
-  lastUpdate: Date.now() - 120000, // 2 minutes ago
-  dataSource: "ADSB",
-  airline: "Turkish Airlines",
-  aircraft: "Boeing 777-300ER",
-  route: "IST → JFK",
-  progress: 67,
-  origin: "IST",
-  destination: "JFK",
+  airlineName: "Turkish Airlines",
+  originName: "Istanbul",
+  destinationName: "New York",
+  progressPercent: 67,
+  success: true
 }
 
 export default function FlightLookup() {
@@ -62,25 +81,87 @@ export default function FlightLookup() {
   const [flightData, setFlightData] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showError, setShowError] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [units, setUnits] = useState({ altitude: "ft", speed: "kt", distance: "nm" })
+  const [timezone, setTimezone] = useState("utc") // "utc" or "local"
+
   const [jsonFilter, setJsonFilter] = useState("")
-  const { theme, setTheme } = useTheme()
+  const { theme, setTheme, resolvedTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [jsonModalOpen, setJsonModalOpen] = useState(false)
 
+
   useEffect(() => {
     setMounted(true)
-    document.documentElement.style.setProperty("--color-primary", "hsl(24, 95%, 53%)")
-    document.documentElement.style.setProperty("--color-accent", "hsl(43, 96%, 56%)")
+    
+    // Set CSS variables for theme colors
+    if (resolvedTheme) {
+      document.documentElement.style.setProperty("--color-primary", "hsl(24, 95%, 53%)")
+      document.documentElement.style.setProperty("--color-accent", "hsl(43, 96%, 56%)")
+    }
 
     const savedUnits = localStorage.getItem("flight-units")
     if (savedUnits) {
       setUnits(JSON.parse(savedUnits))
     }
-  }, [])
+    
+    const savedTimezone = localStorage.getItem("flight-timezone")
+    if (savedTimezone) {
+      setTimezone(savedTimezone)
+    }
+  }, [resolvedTheme])
+
+  // Initialize theme colors when component mounts
+  useEffect(() => {
+    if (mounted && resolvedTheme) {
+      document.documentElement.style.setProperty("--color-primary", "hsl(24, 95%, 53%)")
+      document.documentElement.style.setProperty("--color-accent", "hsl(43, 96%, 56%)")
+    }
+  }, [mounted, resolvedTheme])
+
+  // Auto-dismiss error after 4 seconds
+  useEffect(() => {
+    if (error) {
+      // Start with showError false so it's off-screen
+      setShowError(false)
+      // Small delay to ensure it starts off-screen, then slide in
+      const slideInTimer = setTimeout(() => {
+        setShowError(true)
+      }, 50)
+      
+      const dismissTimer = setTimeout(() => {
+        setShowError(false)
+        setTimeout(() => setError(null), 500) // Remove from DOM after exit animation
+      }, 4000)
+      
+      return () => {
+        clearTimeout(slideInTimer)
+        clearTimeout(dismissTimer)
+      }
+    }
+  }, [error])
+
+
+
+  // Auto-refresh every 5 minutes only when document is visible
+  useEffect(() => {
+    if (!autoRefresh || !flightData || !searchQuery.trim()) return
+
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        handleSearch()
+      }
+    }, 5 * 60 * 1000) // 5 minutes
+
+    return () => clearInterval(interval)
+  }, [autoRefresh, flightData, searchQuery])
+
+
+
+
 
   useHotkeys([
     {
@@ -117,22 +198,90 @@ export default function FlightLookup() {
     setError(null)
     try {
       const data = await fetchFlight(q)
-      setFlightData(data) // expect {summary, progressPercent, lastPosition, ...}
-    } catch (e: any) {
-      const msg = String(e?.message || '')
-      if (/404/.test(msg)) setError('Flight not found or inactive')
-      else if (/401|403/.test(msg)) setError('Auth problem with flight data service')
-      else if (/429/.test(msg)) setError('Rate limited—please wait a bit')
-      else setError('Internal Server Error')
-      setFlightData(null)
-    } finally {
+      if (!data || !data.success) {
+        setIsLoading(false) // Clear loading first
+        // Small delay to ensure loading state is cleared before error shows
+        setTimeout(() => {
+          setError('Flight not found or currently inactive')
+        }, 50)
+        setFlightData(null)
+        return
+      }
+      setFlightData(data)
       setIsLoading(false)
+    } catch (e: any) {
+      setIsLoading(false) // Clear loading first
+      // Small delay to ensure loading state is cleared before error shows
+      setTimeout(() => {
+        const msg = String(e?.message || '')
+        if (/404/.test(msg)) {
+          setError('Flight not found or currently inactive')
+        } else if (/401|403/.test(msg)) {
+          setError('Authentication problem with flight data service')
+        } else if (/429/.test(msg)) {
+          setError('Rate limited - please wait a moment before trying again')
+        } else if (/500|502|503/.test(msg)) {
+          setError('Flight data service temporarily unavailable')
+        } else {
+          setError('Unable to search for flights at this time')
+        }
+      }, 50)
+      setFlightData(null)
     }
+  }
+
+
+
+  // Fix: Extract speed from multiple possible locations in the flight data
+  const extractFlightSpeed = (flight: any) => {
+    if (!flight) return null
+    
+    // Try multiple sources for speed data
+    const speed = 
+      flight?.lastPosition?.speed ??           // Direct speed property
+      flight?.lastPosition?.ground_speed ??    // Ground speed
+      flight?.fr24?.data?.[0]?.speed ??       // FR24 data speed
+      flight?.fr24?.data?.[0]?.ground_speed ?? // FR24 ground speed
+      flight?.speed ??                         // Flight level speed
+      flight?.ground_speed ??                  // Flight level ground speed
+      null
+      
+    if (speed != null) {
+      // FlightRadar24 gspeed is already in knots, no conversion needed
+      return Math.round(speed)
+    }
+    
+    return null
+  }
+
+  // Fix: Extract altitude from multiple possible locations
+  const extractFlightAltitude = (flight: any) => {
+    if (!flight) return null
+    
+    const altitude = 
+      flight?.lastPosition?.altitude ??        // Direct altitude property
+      flight?.lastPosition?.alt ??            // Alt property
+      flight?.fr24?.data?.[0]?.altitude ??   // FR24 data altitude
+      flight?.fr24?.data?.[0]?.alt ??        // FR24 alt property
+      flight?.altitude ??                      // Flight level altitude
+      flight?.alt ??                          // Flight level alt
+      null
+      
+    if (altitude != null) {
+      return Math.round(altitude) // Round to nearest foot
+    }
+    
+    return null
   }
 
   const saveSettings = (newUnits: typeof units) => {
     setUnits(newUnits)
     localStorage.setItem("flight-units", JSON.stringify(newUnits))
+  }
+
+  const saveTimezone = (newTimezone: string) => {
+    setTimezone(newTimezone)
+    localStorage.setItem("flight-timezone", newTimezone)
   }
 
   const filteredJson = jsonFilter
@@ -157,6 +306,7 @@ export default function FlightLookup() {
               <div>
                 <h1 className="text-2xl font-serif font-black text-foreground">FlightNerd</h1>
                 <p className="text-sm text-muted-foreground">Real-time flight tracking & analytics</p>
+
               </div>
               {!autoRefresh && (
                 <Badge variant="secondary" className="ml-4 bg-muted text-muted-foreground">
@@ -166,11 +316,45 @@ export default function FlightLookup() {
             </div>
 
             <div className="flex items-center gap-2">
-              <Button variant="ghost" size="sm" className="hover:bg-muted/80 transition-all duration-200">
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => {
+                  console.log('Test button clicked!');
+                  alert('Test button is working!');
+                }}
+                className="hover:bg-muted/80 hover:bg-orange-100 dark:hover:bg-orange-500/20 hover:border-orange-300 dark:hover:border-orange-500 transition-all duration-200 border border-transparent text-foreground hover:text-foreground"
+              >
+                Test
+              </Button>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => {
+                  try {
+                    navigator.clipboard.writeText(window.location.href);
+                    // Could add a toast notification here
+                  } catch (e) {
+                    console.error('Failed to copy link:', e);
+                  }
+                }}
+                className="hover:bg-muted/80 hover:bg-orange-100 dark:hover:bg-orange-500/20 hover:border-orange-300 dark:hover:border-orange-500 transition-all duration-200 border border-transparent text-foreground hover:text-foreground"
+              >
                 <Copy className="h-4 w-4 mr-2" />
                 Copy Link
               </Button>
-              <Button variant="ghost" size="sm" className="hover:bg-muted/80 transition-all duration-200">
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => {
+                  try {
+                    window.print();
+                  } catch (e) {
+                    console.error('Failed to print:', e);
+                  }
+                }}
+                className="hover:bg-muted/80 hover:bg-orange-100 dark:hover:bg-orange-500/20 hover:border-orange-300 dark:hover:border-orange-500 transition-all duration-200 border border-transparent text-foreground hover:text-foreground"
+              >
                 <Printer className="h-4 w-4 mr-2" />
                 Print
               </Button>
@@ -180,7 +364,7 @@ export default function FlightLookup() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="hover:bg-muted/80 transition-all duration-200"
+                    className="hover:bg-muted/80 hover:bg-orange-100 dark:hover:bg-orange-500/20 hover:border-orange-300 dark:hover:border-orange-500 transition-all duration-200 border border-transparent text-foreground hover:text-foreground"
                     aria-label="Open settings"
                   >
                     <Settings className="h-4 w-4" />
@@ -299,6 +483,37 @@ export default function FlightLookup() {
                             </label>
                           </div>
                         </div>
+
+                        <div className="flex items-center justify-between p-4 bg-muted/20 rounded-lg hover:bg-muted/30 transition-all duration-300">
+                          <div className="space-y-1">
+                            <label className="text-sm font-medium text-foreground">Time Display</label>
+                            <p className="text-xs text-muted-foreground">
+                              Choose between UTC and local time for flight times
+                            </p>
+                          </div>
+                          <Select
+                            value={timezone}
+                            onValueChange={(value) => saveTimezone(value)}
+                          >
+                            <SelectTrigger className="w-[100px] h-9 bg-background border-border hover:border-[var(--color-primary)]/30 focus:border-[var(--color-primary)] focus:ring-2 focus:ring-[var(--color-primary)]/20 transition-all duration-200">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="bg-background border-border shadow-lg">
+                              <SelectItem
+                                value="utc"
+                                className="hover:bg-[var(--color-primary)]/10 focus:bg-[var(--color-primary)]/10 text-foreground hover:text-foreground focus:text-foreground"
+                              >
+                                UTC
+                              </SelectItem>
+                              <SelectItem
+                                value="local"
+                                className="hover:bg-[var(--color-primary)]/10 focus:bg-[var(--color-primary)]/10 text-foreground hover:text-foreground focus:text-foreground"
+                              >
+                                Local
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
                       </CardContent>
                     </Card>
                   </div>
@@ -310,13 +525,13 @@ export default function FlightLookup() {
                 variant="ghost"
                 size="sm"
                 onClick={() => {
-                  const newTheme = theme === "dark" ? "light" : "dark"
-                  setTheme(newTheme)
+                  const newTheme = theme === "dark" ? "light" : "dark";
+                  setTheme(newTheme);
                 }}
                 aria-label="Toggle theme"
-                className="hover:bg-muted/80 transition-all duration-200 min-w-[40px] min-h-[40px] rounded-md focus-visible:ring-2 focus-visible:ring-ring"
+                className="hover:bg-muted/80 hover:bg-orange-100 dark:hover:bg-orange-500/20 hover:border-orange-300 dark:hover:border-orange-500 transition-all duration-200 min-w-[40px] min-h-[40px] rounded-md focus-visible:ring-2 focus-visible:ring-ring relative border border-transparent text-foreground hover:text-foreground"
               >
-                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                {mounted && resolvedTheme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               </Button>
             </div>
           </div>
@@ -332,18 +547,26 @@ export default function FlightLookup() {
             </p>
           </div>
 
-          <Card className="border-2 border-[var(--color-primary)]/20 shadow-lg hover:shadow-xl transition-all duration-300 hover:border-[var(--color-primary)]/30 rounded-xl">
+          <Card className="border-2 border-orange-500/20 shadow-lg hover:shadow-xl transition-all duration-300 hover:border-orange-500/30 rounded-xl bg-card/50">
             <CardContent className="p-6">
               <div className="flex gap-3">
                 <div className="flex-1 relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-muted-foreground transition-colors duration-200" />
                   <Input
+                    type="text"
                     placeholder="Enter flight number (e.g., UAL1409, DAL934, AS1154...)"
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      // Only allow letters and numbers, convert to uppercase
+                      const cleanValue = value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+                      setSearchQuery(cleanValue);
+                    }}
                     onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                    className="pl-10 h-12 text-lg !border-[var(--color-primary)]/20 focus:!ring-1 focus:!ring-[var(--color-primary)]/40 focus:!outline-none focus:!border-[var(--color-primary)]/40 transition-all duration-200 hover:!border-[var(--color-primary)]/25 focus-visible:!ring-1 focus-visible:!ring-[var(--color-primary)]/40 focus-visible:!ring-offset-0 !shadow-none rounded-lg"
+                    className="pl-10 h-12 text-lg !border-orange-500/20 focus:!ring-1 focus:!ring-orange-500/40 focus:!outline-none focus:!border-orange-500/40 transition-all duration-200 hover:!border-orange-500/25 focus-visible:!ring-1 focus-visible:!ring-orange-500/40 focus-visible:!ring-offset-0 shadow-none rounded-lg bg-background"
+                    style={{ borderColor: 'rgb(249 115 22 / 0.2)' }}
                     aria-label="Flight search input"
+                    disabled={isLoading}
                   />
                 </div>
                 <Button
@@ -366,24 +589,48 @@ export default function FlightLookup() {
           </Card>
         </div>
 
+        {/* Error Message Display */}
+        {error && (
+          <div className={`fixed top-24 right-4 z-50 transition-all duration-500 ease-in-out transform ${
+            showError ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'
+          }`}>
+            <div className="bg-red-500 text-white px-4 py-3 rounded-lg shadow-lg border border-red-600 max-w-sm">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 bg-white rounded-full"></div>
+                <span className="font-medium">Flight not active</span>
+              </div>
+              <p className="text-red-100 text-sm mt-1">
+                This flight isn't currently available
+              </p>
+            </div>
+          </div>
+        )}
+
         {flightData && (
           <div className="max-w-7xl mx-auto animate-in fade-in duration-500">
             <div className="mb-6">
               <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
                 <div>
                   <h3 className="text-3xl font-sans font-semibold text-foreground mb-2 tracking-tight">
-                    Flight {flightData.callsign}
+                    Flight {flightData.summary?.callsign || flightData.callsign || 'N/A'}
                   </h3>
                   <div className="flex flex-wrap items-center gap-4 text-muted-foreground">
-                    <span>{flightData.airline}</span>
+                    <span>{flightData.airlineName || flightData.airline || 'N/A'}</span>
                     <Separator orientation="vertical" className="h-4 hidden sm:block" />
-                    <span>{flightData.aircraft}</span>
+                    <span>{flightData.aircraft || 'N/A'}</span>
                     <Separator orientation="vertical" className="h-4 hidden sm:block" />
-                    <span>{flightData.route}</span>
+                    <span>
+                      {flightData.origin?.iata && flightData.destination?.iata 
+                        ? `${flightData.origin.iata} → ${flightData.destination.iata}`
+                        : flightData.origin?.icao && flightData.destination?.icao
+                        ? `${flightData.origin.icao} → ${flightData.destination.icao}`
+                        : flightData.route || 'N/A'
+                      }
+                    </span>
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <BadgeStatus status={flightData.status} />
+                  <BadgeStatus status={flightData.summary?.status || flightData.status || 'UNKNOWN'} />
                 </div>
               </div>
             </div>
@@ -397,17 +644,16 @@ export default function FlightLookup() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                  <ProgressWithLabels
-                    percentage={flightData.progress}
-                    origin={flightData.origin}
-                    destination={flightData.destination}
-                  />
+                  {/* Route Progress Bar */}
+                  <div className="p-4 bg-muted/20 border-border/50 rounded-lg">
+                    <RouteProgress flight={flightData} />
+                  </div>
 
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                     <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
                       <div className="text-center space-y-2">
                         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Squawk</div>
-                        <div className="text-lg font-bold text-foreground">{flightData.squawk}</div>
+                        <div className="text-lg font-bold text-foreground">{flightData.lastPosition?.squawk || flightData.squawk || 'N/A'}</div>
                       </div>
                     </Card>
 
@@ -416,7 +662,9 @@ export default function FlightLookup() {
                         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                           Altitude
                         </div>
-                        <div className="text-lg font-bold text-foreground">{flightData.position.altitude}</div>
+                        <div className="text-lg font-bold text-foreground">
+                          {extractFlightAltitude(flightData) || flightData.lastPosition?.alt || 'N/A'}
+                        </div>
                       </div>
                     </Card>
 
@@ -425,7 +673,9 @@ export default function FlightLookup() {
                         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                           Ground Speed
                         </div>
-                        <div className="text-lg font-bold text-foreground">{flightData.position.groundSpeed}</div>
+                        <div className="text-lg font-bold text-foreground">
+                          {extractFlightSpeed(flightData) || flightData.lastPosition?.groundSpeed || flightData.lastPosition?.speed || 'N/A'}
+                        </div>
                       </div>
                     </Card>
 
@@ -434,7 +684,7 @@ export default function FlightLookup() {
                         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Track</div>
                         <div className="text-lg font-bold text-foreground flex items-center justify-center gap-1">
                           <Navigation className="h-4 w-4" />
-                          {flightData.position.track}
+                          {flightData.lastPosition?.track || flightData.lastPosition?.heading || 'N/A'}
                         </div>
                       </div>
                     </Card>
@@ -444,7 +694,9 @@ export default function FlightLookup() {
                         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                           Vertical Speed
                         </div>
-                        <div className="text-lg font-bold text-foreground">{flightData.position.verticalSpeed}</div>
+                        <div className="text-lg font-bold text-foreground">
+                          {flightData.lastPosition?.verticalSpeed || flightData.lastPosition?.vspeed || 'N/A'}
+                        </div>
                       </div>
                     </Card>
 
@@ -454,8 +706,79 @@ export default function FlightLookup() {
                           Position
                         </div>
                         <div className="text-sm font-bold text-foreground">
-                          {flightData.position.lat}, {flightData.position.lon}
+                          {flightData.lastPosition?.lat && flightData.lastPosition?.lon 
+                            ? `${flightData.lastPosition.lat.toFixed(3)}, ${flightData.lastPosition.lon.toFixed(3)}`
+                            : 'N/A'
+                          }
                         </div>
+                      </div>
+                    </Card>
+                  </div>
+
+                  {/* New data boxes for full API information */}
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-4">
+                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
+                      <div className="text-center space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Registration</div>
+                        <div className="text-lg font-bold text-foreground">{flightData.registration || 'N/A'}</div>
+                      </div>
+                    </Card>
+
+                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
+                      <div className="text-center space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Hex Code</div>
+                        <div className="text-lg font-bold text-foreground font-mono">{flightData.hex || 'N/A'}</div>
+                      </div>
+                    </Card>
+
+                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
+                      <div className="text-center space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Source</div>
+                        <div className="text-lg font-bold text-foreground">{flightData.source || 'N/A'}</div>
+                      </div>
+                    </Card>
+
+                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
+                      <div className="text-center space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Origin IATA</div>
+                        <div className="text-lg font-bold text-foreground">{flightData.origin?.iata || 'N/A'}</div>
+                      </div>
+                    </Card>
+
+                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
+                      <div className="text-center space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Origin ICAO</div>
+                        <div className="text-lg font-bold text-foreground">{flightData.origin?.icao || 'N/A'}</div>
+                      </div>
+                    </Card>
+
+                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
+                      <div className="text-center space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Destination IATA</div>
+                        <div className="text-lg font-bold text-foreground">{flightData.destination?.iata || 'N/A'}</div>
+                      </div>
+                    </Card>
+
+                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
+                      <div className="text-center space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Destination ICAO</div>
+                        <div className="text-lg font-bold text-foreground">{flightData.destination?.icao || 'N/A'}</div>
+                      </div>
+                    </Card>
+
+                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
+                      <div className="text-center space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">ETA</div>
+                        <div className="text-lg font-bold text-foreground">
+                          {formatTime(flightData.eta, timezone)}
+                        </div>
+                      </div>
+                    </Card>
+
+                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
+                      <div className="text-center space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Operating As</div>
+                        <div className="text-lg font-bold text-foreground">{flightData.operatingAs || 'N/A'}</div>
                       </div>
                     </Card>
                   </div>
@@ -463,7 +786,7 @@ export default function FlightLookup() {
                   <div className="mt-4 pt-4 border-t border-border">
                     <div className="flex justify-center items-center text-sm">
                       <span className="text-muted-foreground">
-                        Last Update: <TimeAgo timestamp={flightData.lastUpdate} />
+                        Last Update: <TimeAgo timestamp={flightData.lastPosition?.timestamp || flightData.lastUpdate || Date.now()} />
                       </span>
                     </div>
                   </div>
@@ -480,10 +803,34 @@ export default function FlightLookup() {
                   </CardHeader>
                   <CardContent>
                     <div className="text-center space-y-4">
-                      <div className="p-4 bg-secondary/10 rounded-lg hover:bg-secondary/20 transition-all duration-300 border border-transparent hover:border-[var(--color-primary)]/20">
-                        <Gauge className="h-8 w-8 text-[var(--color-accent)] mx-auto mb-2 animate-pulse" />
-                        <BadgeStatus status={flightData.status} className="mb-2" />
-                        <p className="text-sm text-muted-foreground">Current Status</p>
+                      <div className="p-6 bg-gradient-to-br from-[var(--color-primary)]/10 to-[var(--color-accent)]/10 rounded-2xl border border-[var(--color-primary)]/20 hover:border-[var(--color-primary)]/40 transition-all duration-300 hover:shadow-lg">
+                        <div className="flex items-center justify-center mb-4">
+                          <Plane className="h-12 w-12 text-[var(--color-primary)] animate-pulse" />
+                        </div>
+                        <h2 className="text-2xl font-bold text-foreground mb-2">
+                          Flight {flightData.summary?.callsign || flightData.callsign || 'N/A'}
+                        </h2>
+                        <div className="space-y-2 text-sm text-muted-foreground">
+                          <div><span className="font-semibold">Airline:</span> <span>{flightData.airlineName || flightData.airline || 'N/A'}</span></div>
+                          <div><span className="font-semibold">Aircraft:</span> <span>{flightData.aircraft || 'N/A'}</span></div>
+                          <div><span className="font-semibold">Route:</span> <span>
+                            {flightData.origin?.iata && flightData.destination?.iata 
+                              ? `${flightData.origin.iata} → ${flightData.destination.iata}`
+                              : flightData.origin?.icao && flightData.destination?.icao
+                              ? `${flightData.origin.icao} → ${flightData.destination.icao}`
+                              : flightData.route || 'N/A'
+                            }
+                          </span></div>
+                          {flightData.registration && (
+                            <div><span className="font-semibold">Registration:</span> <span>{flightData.registration}</span></div>
+                          )}
+                          {flightData.eta && (
+                            <div><span className="font-semibold">ETA:</span> <span>{formatTime(flightData.eta, timezone)}</span></div>
+                          )}
+                        </div>
+                        <div className="mt-4 flex justify-center">
+                          <BadgeStatus status={flightData.summary?.status || flightData.status || 'UNKNOWN'} />
+                        </div>
                       </div>
                     </div>
                   </CardContent>
@@ -555,7 +902,7 @@ export default function FlightLookup() {
           </div>
         )}
 
-        {!flightData && !isLoading && (
+        {!flightData && (
           <div className="text-center py-16" role="region" aria-label="Empty state">
             <div className="p-4 bg-muted/50 rounded-full w-20 h-20 mx-auto mb-6 flex items-center justify-center hover:bg-muted/70 transition-all duration-300 hover:scale-105">
               <Plane className="h-10 w-10 text-muted-foreground" />

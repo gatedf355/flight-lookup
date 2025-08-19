@@ -7,16 +7,34 @@ function buildUrl(path: string, params: Record<string, string>) {
   return url.toString()
 }
 
-export async function fetchFlight(query: string) {
-  const q = query.trim().toUpperCase()
-  const key = /^[A-Z]{2}\s?\d+$/.test(q) ? 'number' : 'callsign'
-  const res = await fetch(buildUrl('/api/flight', { [key]: q }), {
-    cache: 'no-store',
-  })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    const code = res.status
-    throw new Error(detail || `HTTP ${code}`)
+// Fix: Point to the correct backend port
+const API_BASE_URL = 'http://localhost:4000'; // Change from 3000 to 4000
+
+export async function fetchFlight(query: string, full: boolean = false): Promise<any> {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 8000);
+
+  try {
+    const response = await fetch(`/api/flight?callsign=${encodeURIComponent(query)}&full=${full}`, {
+      signal: ac.signal,
+      headers: { accept: 'application/json' }
+    });
+    clearTimeout(t);
+    
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error('Flight not found');
+      }
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    return await response.json();
+  } catch (error: any) {
+    clearTimeout(t);
+    if (error?.name === 'AbortError') {
+      throw new Error('timeout');
+    }
+    console.error('Error fetching flight:', error);
+    throw error;
   }
-  return res.json()
 }

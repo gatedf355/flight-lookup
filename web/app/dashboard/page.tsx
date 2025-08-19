@@ -6,8 +6,8 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Progress } from "@/components/ui/progress"
 import { Search, Plane, MapPin, Clock, Navigation, Gauge, Activity, TrendingUp, Globe, Wifi } from "lucide-react"
+import RouteProgress from "@/components/RouteProgress"
 
 const mockFlightData = {
   callsign: "THY8DE",
@@ -18,6 +18,10 @@ const mockFlightData = {
   airline: "Turkish Airlines",
   aircraft: "Boeing 777-300ER",
   route: "IST → JFK",
+  summary: {
+    orig_icao: "LTFM",
+    dest_icao: "KJFK"
+  },
   position: {
     lat: 65.577,
     lon: -12.428,
@@ -124,20 +128,20 @@ export default function FlightDashboard() {
               </div>
             </div>
 
-            {/* Progress Bar */}
+            {/* Route Progress Bar */}
             <Card>
               <CardContent className="p-6">
-                <div className="space-y-4">
-                  <div className="flex justify-between text-sm">
-                    <span className="font-semibold">IST</span>
-                    <span className="text-muted-foreground">{flightData.progress}% Complete</span>
-                    <span className="font-semibold">JFK</span>
-                  </div>
-                  <Progress value={flightData.progress} className="h-2" />
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>Departed {flightData.departure}</span>
-                    <span>ETA {flightData.eta}</span>
-                  </div>
+                <RouteProgress
+                  originCode={flightData?.summary?.orig_icao ?? flightData?.route?.split(' → ')?.[0] ?? null}
+                  destCode={flightData?.summary?.dest_icao ?? flightData?.route?.split(' → ')?.[1] ?? null}
+                  position={{
+                    lat: flightData?.position?.lat ?? null,
+                    lon: flightData?.position?.lon ?? null,
+                  }}
+                />
+                <div className="flex justify-between text-xs text-muted-foreground mt-4">
+                  <span>Departed {flightData.departure}</span>
+                  <span>ETA {flightData.eta}</span>
                 </div>
               </CardContent>
             </Card>

@@ -8,20 +8,21 @@ interface ProgressWithLabelsProps {
 }
 
 export function ProgressWithLabels({ percentage, origin, destination, className }: ProgressWithLabelsProps) {
-  if (percentage === null || percentage === undefined) {
-    return null
-  }
+  const isCalculated = percentage !== null && percentage !== undefined
+  const displayPercentage = isCalculated ? percentage : 0
 
   return (
     <div className={cn("space-y-2", className)}>
       <div className="flex justify-between items-center">
         <span className="text-sm font-medium text-muted-foreground">Route Progress</span>
-        <span className="text-sm font-semibold text-[var(--color-primary)]">{percentage}%</span>
+        <span className="text-sm font-semibold text-[var(--color-primary)]">
+          {isCalculated ? `${percentage}%` : "N/A"}
+        </span>
       </div>
       <div className="w-full bg-muted rounded-full h-3 overflow-hidden">
         <div
           className="h-full bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-accent)] rounded-full transition-all duration-1000 ease-out relative"
-          style={{ width: `${Math.min(Math.max(percentage, 0), 100)}%` }}
+          style={{ width: `${Math.min(Math.max(displayPercentage, 0), 100)}%` }}
         >
           <div className="absolute right-0 top-0 h-full w-1 bg-white/50 animate-pulse"></div>
         </div>
