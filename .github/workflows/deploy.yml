@@ -30,4 +30,4 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           projectName: skynerd-ui
           branch: ui-v2
-          directory: .vercel/output/static
+          directory: web/.vercel/output/static
