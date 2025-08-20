@@ -1,0 +1,33 @@
+name: Deploy to Cloudflare Pages (ui-v2)
+
+on:
+  push:
+    branches: [ui-v2]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build with next-on-pages
+        run: npx @cloudflare/next-on-pages@latest
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: skynerd-ui
+          branch: ui-v2
+          directory: .vercel/output/static
