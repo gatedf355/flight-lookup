@@ -753,6 +753,21 @@ export default function FlightLookup() {
       </header>
 
       <main className="container mx-auto px-4 py-8" role="main">
+        {/* Test textbox */}
+        <div className="max-w-2xl mx-auto mb-8">
+          <Card className="border-2 border-blue-500/20 shadow-lg bg-blue-50 dark:bg-blue-950/20 rounded-xl">
+            <CardContent className="p-4">
+              <div className="text-center">
+                <Input 
+                  value="test" 
+                  readOnly 
+                  className="text-center text-lg font-bold text-blue-600 dark:text-blue-400 bg-transparent border-none shadow-none"
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
         <div className="max-w-2xl mx-auto mb-12">
           <div className="text-center mb-8">
             <h2 className="text-4xl font-serif font-black text-foreground mb-4">Track Any Flight Worldwide</h2>
