@@ -57,8 +57,8 @@ export async function fetchProgressForFlight(flight: FlightLike) {
   }
 
   const qs = new URLSearchParams({ origin, dest, lat: String(lat), lon: String(lon) });
-  // If API is empty, this becomes a relative call and hits Next's /api rewrite
-  const url = `${API}/api/flight-progress?${qs.toString()}`;
+  // Use relative path to hit Next's /api rewrite (same as working fetchProgress function)
+  const url = `/api/flight-progress?${qs.toString()}`;
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort("timeout"), 8000);

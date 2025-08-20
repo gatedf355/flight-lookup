@@ -7,9 +7,6 @@ function buildUrl(path: string, params: Record<string, string>) {
   return url.toString()
 }
 
-// Fix: Point to the correct backend port
-const API_BASE_URL = 'http://localhost:4000'; // Change from 3000 to 4000
-
 export async function fetchFlight(query: string, full: boolean = false, searchType: 'callsign' | 'registration' = 'callsign'): Promise<any> {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), 8000);

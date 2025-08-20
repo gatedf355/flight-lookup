@@ -69,7 +69,14 @@ app.use(requestId);
 app.use((req, res, next) => {
   res.setTimeout(8000, () => {
     console.warn('Response timeout:', req.method, req.originalUrl);
-    if (!res.headersSent) res.status(504).json({ error: 'upstream_timeout' });
+    if (!res.headersSent) res.status(504).json({ 
+      success: false,
+      error: 'upstream_timeout',
+      status: {
+        active: false,
+        text: 'TIMEOUT'
+      }
+    });
   });
   next();
 });
@@ -336,7 +343,14 @@ app.get('/api/flight', limitFlightSearch(30_000, 10_000), async (req, res) => {
     console.log('Full data requested:', full);
     
     if (!ident) {
-      return res.status(400).json({ error: 'Provide ?number=, ?callsign=, ?registration=, or ?ident=' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Provide ?number=, ?callsign=, ?registration=, or ?ident=',
+        status: {
+          active: false,
+          text: 'BAD_REQUEST'
+        }
+      });
     }
 
     const cacheKey = `flight:${ident}:${searchType}:${full}`;
@@ -426,40 +440,77 @@ app.get('/api/flight', limitFlightSearch(30_000, 10_000), async (req, res) => {
 
     if (result) {
       console.log('✅ Sending flight data to client');
-      res.json(result);
+      // Wrap the result in the expected format that the UI checks for
+      const normalized = {
+        success: true,
+        status: {
+          active: true,
+          text: result.status?.text || 'ACTIVE'
+        },
+        flight: result,
+        result: {
+          active: true
+        },
+        raw: result,
+        ...result  // Keep all the original fields for backward compatibility
+      };
+      res.json(normalized);
     } else {
       console.log('❌ No flight data to send, returning 404');
-      res.status(404).json({ error: 'Flight not found' });
+      res.status(404).json({ 
+        success: false,
+        error: 'Flight not found',
+        status: {
+          active: false,
+          text: 'NOT_FOUND'
+        }
+      });
     }
   } catch (err: any) {
     console.error('Flight search error:', err);
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    res.status(500).json({ 
+      success: false,
+      error: err.message || 'Internal server error',
+      status: {
+        active: false,
+        text: 'ERROR'
+      }
+    });
   }
 });
 
 // Test flight endpoint for debugging route progress
 app.get('/api/test-flight', (req, res) => {
   res.json({
-    summary: {
-      callsign: "TEST123",
-      fr24_id: "test123",
-      status: "ENROUTE",
-      orig_icao: "LTFM",
-      dest_icao: "KJFK"
+    success: true,
+    status: {
+      active: true,
+      text: 'TEST'
     },
-    lastPosition: {
-      lat: 65.577,
-      lon: -12.428,
-      altitude: "FL369",
-      groundSpeed: "454 kt",
-      verticalSpeed: "+320 ft/min",
-      track: "298°",
-      squawk: "2731",
-      type: "Boeing 777-300ER",
-      timestamp: Date.now() - 120000
+    flight: {
+      summary: {
+        callsign: "TEST123",
+        fr24_id: "test123",
+        status: "ENROUTE",
+        orig_icao: "LTFM",
+        dest_icao: "KJFK"
+      },
+      lastPosition: {
+        lat: 65.577,
+        lon: -12.428,
+        altitude: "FL369",
+        groundSpeed: "454 kt",
+        verticalSpeed: "+320 ft/min",
+        track: "298°",
+        squawk: "2731",
+        type: "Boeing 777-300ER",
+        timestamp: Date.now() - 120000
+      },
+      fr24: { data: [] }
     },
-    fr24: { data: [] },
-    success: true
+    result: {
+      active: true
+    }
   });
 });
 
@@ -469,7 +520,14 @@ app.get('/api/airports', (req, res) => {
     const icaos = (req.query.icaos as string)?.split(',').filter(Boolean) || [];
     
     if (!icaos.length) {
-      return res.status(400).json({ error: 'Provide ?icaos=KJFK,KLAX' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Provide ?icaos=KJFK,KLAX',
+        status: {
+          active: false,
+          text: 'BAD_REQUEST'
+        }
+      });
     }
 
     // Import flight utilities from JSON file
@@ -495,7 +553,14 @@ app.get('/api/airports', (req, res) => {
     res.json(result);
   } catch (err: any) {
     console.error('Airports error:', err);
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    res.status(500).json({ 
+      success: false,
+      error: err.message || 'Internal server error',
+      status: {
+        active: false,
+        text: 'ERROR'
+      }
+    });
   }
 });
 
@@ -508,7 +573,15 @@ app.use((err: any, req: any, res: any, _next: any) => {
   const id = req?.id;
   // eslint-disable-next-line no-console
   console.error("fatal.unhandled", id, err);
-  res.status(500).json({ requestId: id, error: "UNHANDLED" });
+  res.status(500).json({ 
+    success: false,
+    requestId: id, 
+    error: "UNHANDLED",
+    status: {
+      active: false,
+      text: 'FATAL_ERROR'
+    }
+  });
 });
 
 // ============================================================================

@@ -1,0 +1,6 @@
+name = "skynerd-api"
+main = "src/index.ts"
+compatibility_date = "2025-08-20"
+
+[vars]
+FR24_KEY = "0198afd4-a5c1-72d7-9072-5a42113e733e|mjIwxXbV48fYINDljWplQtzAD2gXMQ3t1j9MzEP6ed77aa43"

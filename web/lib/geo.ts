@@ -1,9 +1,6 @@
 // lib/geo.ts
 export type LatLon = { lat: number; lon: number }
 
-// Backend API configuration
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:4000';
-
 /**
  * Calculate flight progress using the backend API for accurate great-circle calculations
  * Note: This function now requires airport codes (ICAO) instead of coordinates
@@ -14,9 +11,9 @@ export async function progressAlongRoute(
   pos: LatLon
 ): Promise<{ pct: number; totalKm: number; coveredKm: number; remainingKm: number }> {
   try {
-    // Call the backend progress calculation API
+    // Call the backend progress calculation API (use relative path to hit Next.js API route)
     const response = await fetch(
-      `${BACKEND_URL}/api/flight-progress?` + 
+      `/api/flight-progress?` + 
       `origin=${encodeURIComponent(originCode)}&` +
       `dest=${encodeURIComponent(destCode)}&` +
       `lat=${pos.lat}&lon=${pos.lon}`

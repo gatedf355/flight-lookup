@@ -93,9 +93,14 @@ router.get("/flight-progress", (req: Request, res: Response) => {
 
     if (!originCode || !destCode || !Number.isFinite(lat) || !Number.isFinite(lon)) {
       return res.status(400).json({
+        success: false,
         error: "Missing origin/dest/lat/lon",
         hint: "Example: /api/flight-progress?origin=KTPA&dest=EHAM&lat=28.3&lon=-82.5",
-        got: { originCode, destCode, lat, lon }
+        got: { originCode, destCode, lat, lon },
+        status: {
+          active: false,
+          text: 'BAD_REQUEST'
+        }
       });
     }
 
@@ -103,10 +108,15 @@ router.get("/flight-progress", (req: Request, res: Response) => {
     const dest = findAirport(destCode);
     if (!origin || !dest) {
       return res.status(404).json({
+        success: false,
         error: "Airport not found",
         originCode, destCode,
         foundOrigin: Boolean(origin),
-        foundDest: Boolean(dest)
+        foundDest: Boolean(dest),
+        status: {
+          active: false,
+          text: 'NOT_FOUND'
+        }
       });
     }
 
@@ -124,7 +134,14 @@ router.get("/flight-progress", (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error("flight-progress error:", err);
-    res.status(500).json({ error: err?.message ?? "Internal error" });
+    res.status(500).json({ 
+      success: false,
+      error: err?.message ?? "Internal error",
+      status: {
+        active: false,
+        text: 'ERROR'
+      }
+    });
   }
 });
 
