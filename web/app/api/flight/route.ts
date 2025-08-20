@@ -1,4 +1,3 @@
-export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
@@ -14,27 +13,43 @@ export async function GET(request: Request) {
   const upstream = `${backendUrl}/api/flight?callsign=${encodeURIComponent(callsign)}&full=${full || 'false'}&searchType=${searchType || 'callsign'}`;
   
   try {
+    console.log('Calling backend:', upstream);
     const res = await fetch(upstream, { 
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(8000) // 8 second timeout
+      headers: { accept: 'application/json' }
     });
+    console.log('Backend response status:', res.status);
     
     if (res.ok) {
       const data = await res.json();
       
       // Transform the FR24 response to match frontend expectations
+      const flightData = data.result?.response?.flight?.data?.[0];
+      
       const transformedData = {
         success: true,
-        callsign: data.callsign || data.flight,
-        status: data.status || 'ACTIVE', // Default to ACTIVE if no status
-        active: data.active !== false, // Default to true unless explicitly false
+        callsign: flightData?.identification?.callsign || 'N/A',
+        status: 'ACTIVE', // Default to ACTIVE
+        active: true, // Default to true
         summary: {
-          callsign: data.callsign || data.flight,
-          status: data.status || 'ACTIVE',
-          orig_icao: data.orig_icao || data.origin?.icao,
-          dest_icao: data.orig_icao || data.destination?.icao,
-          origin: data.origin?.iata || data.orig_iata,
-          destination: data.destination?.iata || data.dest_iata
+          callsign: flightData?.identification?.callsign || 'N/A',
+          status: 'ACTIVE',
+          orig_icao: flightData?.airport?.origin?.code?.icao || 'N/A',
+          dest_icao: flightData?.airport?.destination?.code?.icao || 'N/A',
+          origin: flightData?.airport?.origin?.code?.iata || 'N/A',
+          destination: flightData?.airport?.destination?.code?.iata || 'N/A'
+        },
+        // Extract key flight information
+        airline: flightData?.airline?.name || 'N/A',
+        airlineCode: flightData?.airline?.code?.iata || 'N/A',
+        origin: {
+          name: flightData?.airport?.origin?.name || 'N/A',
+          iata: flightData?.airport?.origin?.code?.iata || 'N/A',
+          icao: flightData?.airport?.origin?.code?.icao || 'N/A'
+        },
+        destination: {
+          name: flightData?.airport?.destination?.name || 'N/A',
+          iata: flightData?.airport?.destination?.code?.iata || 'N/A',
+          icao: flightData?.airport?.destination?.code?.icao || 'N/A'
         },
         // Keep all the original fields
         ...data
@@ -53,6 +68,7 @@ export async function GET(request: Request) {
     }
   } catch (error) {
     console.error('Error calling backend:', error);
-    return new Response('Backend service unavailable', { status: 503 });
+    console.error('Error details:', error.message, error.stack);
+    return new Response(`Backend service unavailable: ${error.message}`, { status: 503 });
   }
 }

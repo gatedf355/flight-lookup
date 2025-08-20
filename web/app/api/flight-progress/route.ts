@@ -1,4 +1,3 @@
-export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
@@ -10,8 +9,7 @@ export async function GET(req: Request) {
   
   try {
     const r = await fetch(upstream, { 
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(8000) // 8 second timeout
+      headers: { accept: 'application/json' }
     });
     return new Response(await r.text(), {
       status: r.status,
