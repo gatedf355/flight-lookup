@@ -9,7 +9,8 @@
     "start": "next start -p 3000",
     "pages:build": "npx @cloudflare/next-on-pages",
     "build:cf": "npx @cloudflare/next-on-pages@latest && node scripts/cf-inject-config.mjs",
-    "deploy:cf": "npx wrangler pages deploy .vercel/output/static --project-name skynerd-ui --branch ui-v2 --commit-dirty=true"
+    "deploy:cf": "npx wrangler pages deploy .vercel/output/static --project-name skynerd-ui --branch ui-v2 --commit-dirty=true",
+    "sync": "npm run build && rm -rf .next/cache && npx wrangler pages deploy .next --project-name skynerd-ui --commit-dirty=true"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.0.5",

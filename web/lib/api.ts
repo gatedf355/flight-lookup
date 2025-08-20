@@ -12,11 +12,14 @@ export async function fetchFlight(query: string, full: boolean = false, searchTy
   const t = setTimeout(() => ac.abort(), 8000);
 
   try {
+    console.log('🚀 fetchFlight calling API for:', query); // DEBUG
     const response = await fetch(`/api/flight?callsign=${encodeURIComponent(query)}&full=${full}&searchType=${searchType}`, {
       signal: ac.signal,
       headers: { accept: 'application/json' }
     });
     clearTimeout(t);
+    
+    console.log('📡 API response status:', response.status); // DEBUG
     
     if (!response.ok) {
       if (response.status === 404) {
@@ -25,7 +28,9 @@ export async function fetchFlight(query: string, full: boolean = false, searchTy
       throw new Error(`HTTP error! status: ${response.status}`);
     }
     
-    return await response.json();
+    const data = await response.json();
+    console.log('📦 API response data:', data); // DEBUG
+    return data;
   } catch (error: any) {
     clearTimeout(t);
     if (error?.name === 'AbortError') {

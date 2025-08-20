@@ -185,8 +185,22 @@ export default function FlightLookup() {
     window.scrollTo(0, 0)
   }
 
+  // Function to clear cooldown for a specific flight
+  const clearFlightCooldown = (flight: string) => {
+    setFlightCooldowns(prev => {
+      const newMap = new Map(prev)
+      newMap.delete(flight.toUpperCase())
+      return newMap
+    })
+    console.log('🧹 Cleared cooldown for:', flight); // DEBUG
+  }
+
   useEffect(() => {
     setMounted(true)
+    
+    // Force clear any existing error state
+    setError(null)
+    setShowError(false)
     
     // Scroll to top when page loads
     window.scrollTo(0, 0)
@@ -345,21 +359,32 @@ export default function FlightLookup() {
   ])
 
   const handleSearch = async () => {
+    console.log('🚀 handleSearch called with query:', searchQuery.trim()); // DEBUG
+    console.log('🚀 searchCooldownActive:', searchCooldownActive); // DEBUG
+    console.log('🚀 isFlightOnCooldown:', isFlightOnCooldown(searchQuery.trim())); // DEBUG
+    
     const q = searchQuery.trim()
-    if (!q) return
+    if (!q) {
+      console.log('❌ No query - returning'); // DEBUG
+      return
+    }
     
     // Check if general search is on cooldown
     if (searchCooldownActive) {
+      console.log('❌ General cooldown active - returning'); // DEBUG
       return
     }
     
     // Check if this specific flight is on cooldown
     if (isFlightOnCooldown(q)) {
+      console.log('❌ Flight cooldown active - returning'); // DEBUG
       const remainingSeconds = Math.ceil(getFlightCooldownMs(q) / 1000)
       setError(`You already searched for "${q}" recently. Please wait ${remainingSeconds} seconds before searching for this flight again.`)
       setTimeout(() => setError(null), 3000)
       return
     }
+    
+    console.log('✅ All checks passed - proceeding with search'); // DEBUG
     
     // Scroll to top when starting a new search
     window.scrollTo(0, 0)
@@ -375,7 +400,12 @@ export default function FlightLookup() {
     
     try {
       const data = await fetchFlight(q, false, searchType)
+      console.log('🔍 fetchFlight returned:', data); // DEBUG
+      console.log('🔍 data.success:', data?.success); // DEBUG
+      console.log('🔍 data.summary:', data?.summary); // DEBUG
+      
       if (!data || !data.success) {
+        console.log('❌ Validation failed - setting error'); // DEBUG
         setIsLoading(false) // Clear loading first
         // Small delay to ensure loading state is cleared before error shows
         setTimeout(() => {
@@ -384,6 +414,8 @@ export default function FlightLookup() {
         setFlightData(null)
         return
       }
+      
+      console.log('✅ Validation passed - setting flight data'); // DEBUG
       
       // Check if this is a cache hit (same search query as before)
       const isCacheHit = searchQuery.trim() === (flightData?.summary?.callsign || flightData?.callsign || '')
@@ -801,6 +833,13 @@ export default function FlightLookup() {
                   disabled={isLoading || searchCooldownActive || isFlightOnCooldown(searchQuery.trim())}
                   className="h-12 px-8 bg-[var(--color-primary)] hover:bg-[var(--color-primary)]/90 text-white font-semibold transition-all duration-200 hover:shadow-lg hover:scale-105 disabled:hover:scale-100 shadow-lg rounded-lg"
                   aria-label="Search for flight or aircraft"
+                  onMouseEnter={() => {
+                    console.log('🔍 Button state debug:'); // DEBUG
+                    console.log('🔍 isLoading:', isLoading); // DEBUG
+                    console.log('🔍 searchCooldownActive:', searchCooldownActive); // DEBUG
+                    console.log('🔍 isFlightOnCooldown:', isFlightOnCooldown(searchQuery.trim())); // DEBUG
+                    console.log('🔍 searchQuery:', searchQuery.trim()); // DEBUG
+                  }}
                 >
                   {isLoading ? (
                     <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
@@ -843,6 +882,8 @@ export default function FlightLookup() {
             </div>
           </div>
         )}
+
+
 
         {flightData && (
           <div className="max-w-7xl mx-auto animate-in fade-in duration-500">
