@@ -7,6 +7,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import express from "express";
 import { requestId } from "./middleware/requestId";
+import { limitFlightSearch } from "./middleware/limitFlightSearch";
 import { log } from "./logger";
 import axios from "axios";
 import cors from "cors";
@@ -164,17 +165,24 @@ function getRouteFromPosition(lat: number, lon: number, track: number): string {
 // FLIGHTRADAR24 API FUNCTIONS
 // ============================================================================
 
-async function fr24LiveLookup({ ident, flightId, full = false }: { ident?: string; flightId?: string; full?: boolean }) {
+async function fr24LiveLookup({ ident, flightId, full = false, searchType = 'callsign' }: { ident?: string; flightId?: string; full?: boolean; searchType?: 'callsign' | 'registration' }) {
   const params: any = {};
   if (flightId) params.flight = flightId;
-  else if (ident) params.callsigns = ident; // FR24 requires 'callsigns' (plural)
+  else if (ident) {
+    if (searchType === 'registration') {
+      params.registrations = ident; // FR24 uses 'registrations' for registration searches
+    } else {
+      params.callsigns = ident; // FR24 requires 'callsigns' (plural) for callsign searches
+    }
+  }
   params.limit = 50;
 
-  // Always use full API for complete data
+  // Use the same endpoint for both search types
   const endpoint = '/live/flight-positions/full';
   
   // Add debugging for the API call
   console.log('=== FR24 API CALL DEBUG ===');
+  console.log('Search type:', searchType);
   console.log('Endpoint:', endpoint);
   console.log('Params:', params);
   console.log('Full URL:', `${fr24.defaults.baseURL}${endpoint}`);
@@ -306,28 +314,39 @@ app.get("/api/health", (req, res) => {
 });
 
 // Canonical flight lookup endpoint with caching and rate limiting
-app.get('/api/flight', async (req, res) => {
+app.get('/api/flight', limitFlightSearch(30_000, 10_000), async (req, res) => {
   try {
-    const identRaw = (req.query.number as string) || (req.query.callsign as string) || (req.query.ident as string) || '';
+    console.log('=== REQUEST DEBUG ===');
+    console.log('Query params:', req.query);
+    console.log('Number:', req.query.number);
+    console.log('Callsign:', req.query.callsign);
+    console.log('Registration:', req.query.registration);
+    console.log('Ident:', req.query.ident);
+    console.log('SearchType:', req.query.searchType);
+    
+    const identRaw = (req.query.number as string) || (req.query.callsign as string) || (req.query.registration as string) || (req.query.ident as string) || '';
     const ident = identRaw.trim().toUpperCase();
     const full = req.query.full === 'true';
+    const searchTypeRaw = (req.query.searchType as string) || 'callsign';
+    const searchType: 'callsign' | 'registration' = searchTypeRaw === 'registration' ? 'registration' : 'callsign';
     
     console.log('=== FLIGHT SEARCH DEBUG ===');
     console.log('Search query:', ident);
+    console.log('Search type:', searchType);
     console.log('Full data requested:', full);
     
     if (!ident) {
-      return res.status(400).json({ error: 'Provide ?number=, ?callsign=, or ?ident=' });
+      return res.status(400).json({ error: 'Provide ?number=, ?callsign=, ?registration=, or ?ident=' });
     }
 
-    const cacheKey = `flight:${ident}:${full}`;
+    const cacheKey = `flight:${ident}:${searchType}:${full}`;
     
     // single inflight per key
     const result = await withInflight(cacheKey, async () => {
       lastCall.set(keyForThrottle, Date.now());
       
       // Direct FlightRadar24 API call - no filtering, no complex logic
-      const liveData = await fr24LiveLookup({ ident, full });
+      const liveData = await fr24LiveLookup({ ident, full, searchType });
       
       console.log('=== FR24 RESPONSE DEBUG ===');
       console.log('FR24 returned data:', liveData);

@@ -141,7 +141,7 @@ export default function ProgressDebugPage() {
       const res = await fetchProgressForFlight(testFlight);
       setResult(res);
     } catch (error) {
-      setResult({ error: error.message });
+      setResult({ error: error instanceof Error ? error.message : String(error) });
     } finally {
       setLoading(false);
     }

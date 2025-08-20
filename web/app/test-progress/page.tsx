@@ -15,9 +15,13 @@ export default function TestProgressPage() {
             Position: 42.0°N, -76.0°W (should show ~59% progress)
           </p>
           <RouteProgress
-            originCode="CYYZ"
-            destCode="KJFK"
-            position={{ lat: 42.0, lon: -76.0 }}
+            flight={{
+              summary: {
+                orig_icao: "CYYZ",
+                dest_icao: "KJFK"
+              },
+              position: { lat: 42.0, lon: -76.0 }
+            }}
           />
         </div>
 
@@ -28,9 +32,13 @@ export default function TestProgressPage() {
             Position: 65.577°N, -12.428°W (should show ~44% progress)
           </p>
           <RouteProgress
-            originCode="LTFM"
-            destCode="KJFK"
-            position={{ lat: 65.577, lon: -12.428 }}
+            flight={{
+              summary: {
+                orig_icao: "LTFM",
+                dest_icao: "KJFK"
+              },
+              position: { lat: 65.577, lon: -12.428 }
+            }}
           />
         </div>
 
@@ -41,9 +49,13 @@ export default function TestProgressPage() {
             Position: 43.7°N, -79.6°W (should show ~0% progress - near origin)
           </p>
           <RouteProgress
-            originCode="CYYZ"
-            destCode="KJFK"
-            position={{ lat: 43.7, lon: -79.6 }}
+            flight={{
+              summary: {
+                orig_icao: "CYYZ",
+                dest_icao: "KJFK"
+              },
+              position: { lat: 43.7, lon: -79.6 }
+            }}
           />
         </div>
 
@@ -54,9 +66,13 @@ export default function TestProgressPage() {
             Should show error for non-existent airports
           </p>
           <RouteProgress
-            originCode="INVALID"
-            destCode="ALSO_INVALID"
-            position={{ lat: 40.0, lon: -74.0 }}
+            flight={{
+              summary: {
+                orig_icao: "INVALID",
+                dest_icao: "ALSO_INVALID"
+              },
+              position: { lat: 40.0, lon: -74.0 }
+            }}
           />
         </div>
       </div>

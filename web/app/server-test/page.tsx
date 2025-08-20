@@ -9,7 +9,7 @@ export default function ServerTestPage() {
           <p>This is server-side rendered content.</p>
         </div>
         
-        <div className="p-4 border rounded bg-green-50">
+        <div className="p-4 border rounded bg-orange-50">
           <h2 className="text-xl font-semibold">Direct API Test</h2>
           <p>Testing API endpoint directly...</p>
           <a 

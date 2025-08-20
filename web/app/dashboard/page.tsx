@@ -132,12 +132,7 @@ export default function FlightDashboard() {
             <Card>
               <CardContent className="p-6">
                 <RouteProgress
-                  originCode={flightData?.summary?.orig_icao ?? flightData?.route?.split(' → ')?.[0] ?? null}
-                  destCode={flightData?.summary?.dest_icao ?? flightData?.route?.split(' → ')?.[1] ?? null}
-                  position={{
-                    lat: flightData?.position?.lat ?? null,
-                    lon: flightData?.position?.lon ?? null,
-                  }}
+                  flight={flightData}
                 />
                 <div className="flex justify-between text-xs text-muted-foreground mt-4">
                   <span>Departed {flightData.departure}</span>

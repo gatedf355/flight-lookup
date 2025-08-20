@@ -15,8 +15,13 @@ const byIata = new Map<string, Pt & { icao?: string; iata?: string }>();
 
 // Load airport data from flight-utils.json
 try {
-  const airportsPath = path.join(__dirname, '..', 'flight-utils.json');
+  const airportsPath = path.join(__dirname, '..', '..', 'flight-utils.json');
+  console.log('Loading airports from:', airportsPath);
+  console.log('Current directory:', __dirname);
+  
   const airportsData = JSON.parse(fs.readFileSync(airportsPath, 'utf8'));
+  console.log('Airports data loaded successfully');
+  console.log('Number of airports:', Object.keys(airportsData.airports || {}).length);
   
   for (const [code, airport] of Object.entries(airportsData.airports as any)) {
     const icao = String(code).toUpperCase();
@@ -29,6 +34,13 @@ try {
       if (iata) byIata.set(iata, { icao, iata, lat, lon });
     }
   }
+  
+  console.log('Airports loaded into maps:');
+  console.log('  ICAO map size:', byIcao.size);
+  console.log('  IATA map size:', byIata.size);
+  console.log('  Sample ICAO keys:', Array.from(byIcao.keys()).slice(0, 5));
+  console.log('  Sample IATA keys:', Array.from(byIata.keys()).slice(0, 5));
+  
 } catch (err) {
   console.error('Failed to load airport data:', err);
 }

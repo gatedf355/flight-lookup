@@ -1,0 +1,1 @@
+- 2025-08-19 15:29:30Z • tag `ckpt-20250819-112924-766cc7b` • branch `checkpoint/20250819-112924-766cc7b` • commit e9602f4 • UI progress working + backend progress API stable

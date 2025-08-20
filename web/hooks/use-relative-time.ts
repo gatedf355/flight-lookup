@@ -28,7 +28,7 @@ export function useRelativeTime(timestamp: string | number) {
     }
 
     updateRelativeTime()
-    const interval = setInterval(updateRelativeTime, 30000) // Update every 30 seconds
+    const interval = setInterval(updateRelativeTime, 1000) // Update every 1 second for real-time movement
 
     return () => clearInterval(interval)
   }, [timestamp])

@@ -11,7 +11,7 @@ export default function BasicTestPage() {
           <p>This should always be visible</p>
         </div>
         
-        <div className="p-4 border rounded bg-green-50">
+        <div className="p-4 border rounded bg-orange-50">
           <h2 className="text-xl font-semibold">API Test</h2>
           <p>Testing direct API call...</p>
           <button 

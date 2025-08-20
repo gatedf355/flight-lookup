@@ -15,14 +15,14 @@ import {
   Clock,
   Gauge,
   Navigation,
-  Copy,
-  Printer,
+
   Moon,
   Sun,
   Settings,
   Code,
   Filter,
   X,
+  ExternalLink,
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { BadgeStatus } from "@/components/ui/badge-status"
@@ -30,6 +30,7 @@ import { BadgeStatus } from "@/components/ui/badge-status"
 import { TimeAgo } from "@/components/ui/time-ago"
 import { MapShell } from "@/components/ui/map-shell"
 import { useHotkeys } from "@/hooks/use-hotkeys"
+import { useCooldown } from "@/hooks/useCooldown"
 import { fetchFlight } from '@/lib/api'
 import RouteProgress from "@/components/RouteProgress"
 
@@ -82,20 +83,113 @@ export default function FlightLookup() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showError, setShowError] = useState(false)
-  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [autoRefresh, setAutoRefresh] = useState(false)
+  const [refreshInterval, setRefreshInterval] = useState<30 | 60 | 300 | 600>(300) // 30s, 1min, 5min, 10min
+  const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null)
+  const [timeSinceUpdate, setTimeSinceUpdate] = useState<string>('')
+  const [isFromCache, setIsFromCache] = useState(false)
+  const [showCacheNotification, setShowCacheNotification] = useState(false)
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null)
+  const [dropdownTimeout, setDropdownTimeout] = useState<NodeJS.Timeout | null>(null)
   const [units, setUnits] = useState({ altitude: "ft", speed: "kt", distance: "nm" })
   const [timezone, setTimezone] = useState("utc") // "utc" or "local"
 
   const [jsonFilter, setJsonFilter] = useState("")
   const { theme, setTheme, resolvedTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
+  
+  // General cooldown for rapid searching (10s)
+  const { active: searchCooldownActive, remainingMs: searchCooldownMs, start: startSearchCooldown } = useCooldown(0, 'searchCooldownUntil')
+  
+  // Per-flight cooldown tracking (30s per specific flight)
+  const [flightCooldowns, setFlightCooldowns] = useState<Map<string, number>>(new Map())
+  
+  // Check if a specific flight is on cooldown
+  const isFlightOnCooldown = (flight: string) => {
+    const cooldownUntil = flightCooldowns.get(flight.toUpperCase()) || 0
+    return Date.now() < cooldownUntil
+  }
+  
+  // Get remaining cooldown time for a specific flight
+  const getFlightCooldownMs = (flight: string) => {
+    const cooldownUntil = flightCooldowns.get(flight.toUpperCase()) || 0
+    return Math.max(0, cooldownUntil - Date.now())
+  }
+  
+  // Start cooldown for a specific flight
+  const startFlightCooldown = (flight: string, durationMs: number) => {
+    const until = Date.now() + durationMs
+    setFlightCooldowns(prev => {
+      const newMap = new Map(prev)
+      newMap.set(flight.toUpperCase(), until)
+      return newMap
+    })
+  }
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [jsonModalOpen, setJsonModalOpen] = useState(false)
 
+  // Dropdown management functions
+  const openDropdownHandler = (dropdownId: string) => {
+    // Close any currently open dropdown
+    if (openDropdown && openDropdown !== dropdownId) {
+      setOpenDropdown(null)
+      if (dropdownTimeout) {
+        clearTimeout(dropdownTimeout)
+        setDropdownTimeout(null)
+      }
+    }
+    
+    // Open the new dropdown
+    setOpenDropdown(dropdownId)
+    
+    // Set 5 second auto-close timeout
+    const timeout = setTimeout(() => {
+      setOpenDropdown(null)
+      setDropdownTimeout(null)
+    }, 5000)
+    
+    setDropdownTimeout(timeout)
+  }
+  
+  const closeDropdownHandler = () => {
+    setOpenDropdown(null)
+    if (dropdownTimeout) {
+      clearTimeout(dropdownTimeout)
+      setDropdownTimeout(null)
+    }
+  }
+
+  // Reset function to clear all data and return to initial state
+  const resetPage = () => {
+    setSearchQuery('')
+    setFlightData(null)
+    setError(null)
+    setShowError(false)
+    setIsLoading(false)
+    setLastUpdateTime(null)
+    setTimeSinceUpdate('')
+    setIsFromCache(false)
+    setShowCacheNotification(false)
+    setJsonModalOpen(false)
+    setJsonFilter('')
+    closeDropdownHandler()
+    
+    // Clear search cooldown on reset
+    startSearchCooldown(0)
+    
+    // Clear all flight-specific cooldowns
+    setFlightCooldowns(new Map())
+    
+    // Scroll to top when resetting
+    window.scrollTo(0, 0)
+  }
 
   useEffect(() => {
     setMounted(true)
+    
+    // Scroll to top when page loads
+    window.scrollTo(0, 0)
     
     // Set CSS variables for theme colors
     if (resolvedTheme) {
@@ -144,22 +238,81 @@ export default function FlightLookup() {
     }
   }, [error])
 
+  // Cleanup dropdown timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (dropdownTimeout) {
+        clearTimeout(dropdownTimeout)
+      }
+    }
+  }, [dropdownTimeout])
+
+  // Clean up expired flight cooldowns periodically
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now()
+      setFlightCooldowns(prev => {
+        const newMap = new Map()
+        for (const [flight, until] of prev.entries()) {
+          if (until > now) {
+            newMap.set(flight, until)
+          }
+        }
+        return newMap
+      })
+    }, 5000) // Clean up every 5 seconds
+
+    return () => clearInterval(interval)
+  }, [])
 
 
-  // Auto-refresh every 5 minutes only when document is visible
+
+  // Auto-refresh based on selected interval only when document is visible
   useEffect(() => {
     if (!autoRefresh || !flightData || !searchQuery.trim()) return
 
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       if (document.visibilityState === 'visible') {
+        // Check if this is a cache hit before making the request
+        const currentCallsign = flightData?.summary?.callsign || flightData?.callsign || ''
+        const isCacheHit = searchQuery.trim() === currentCallsign
+        
+        if (isCacheHit) {
+          // Show cache notification for auto-refresh cache hits
+          setIsFromCache(true)
+          setShowCacheNotification(true)
+          setTimeout(() => setShowCacheNotification(false), 3000)
+        }
+        
         handleSearch()
       }
-    }, 5 * 60 * 1000) // 5 minutes
+    }, refreshInterval * 1000) // Use selected interval
 
     return () => clearInterval(interval)
-  }, [autoRefresh, flightData, searchQuery])
+  }, [autoRefresh, flightData, searchQuery, refreshInterval])
 
+  // Update the "time since last update" display every second
+  useEffect(() => {
+    if (!lastUpdateTime) return
 
+    const interval = setInterval(() => {
+      const now = new Date()
+      const diff = now.getTime() - lastUpdateTime.getTime()
+      const seconds = Math.floor(diff / 1000)
+      
+      if (seconds < 60) {
+        setTimeSinceUpdate(`${seconds}s ago`)
+      } else if (seconds < 3600) {
+        const minutes = Math.floor(seconds / 60)
+        setTimeSinceUpdate(`${minutes}m ago`)
+      } else {
+        const hours = Math.floor(seconds / 3600)
+        setTimeSinceUpdate(`${hours}h ago`)
+      }
+    }, 1000)
+
+    return () => clearInterval(interval)
+  }, [lastUpdateTime])
 
 
 
@@ -167,7 +320,7 @@ export default function FlightLookup() {
     {
       key: "/",
       callback: () => {
-        const searchInput = document.querySelector('input[placeholder*="flight number"]') as HTMLInputElement
+        const searchInput = document.querySelector('input[placeholder*="flight"]') as HTMLInputElement
         if (searchInput) {
           searchInput.focus()
         }
@@ -194,10 +347,34 @@ export default function FlightLookup() {
   const handleSearch = async () => {
     const q = searchQuery.trim()
     if (!q) return
+    
+    // Check if general search is on cooldown
+    if (searchCooldownActive) {
+      return
+    }
+    
+    // Check if this specific flight is on cooldown
+    if (isFlightOnCooldown(q)) {
+      const remainingSeconds = Math.ceil(getFlightCooldownMs(q) / 1000)
+      setError(`You already searched for "${q}" recently. Please wait ${remainingSeconds} seconds before searching for this flight again.`)
+      setTimeout(() => setError(null), 3000)
+      return
+    }
+    
+    // Scroll to top when starting a new search
+    window.scrollTo(0, 0)
+    
     setIsLoading(true)
     setError(null)
+    
+    // Auto-detect search type based on input format
+    // Registration patterns: C-FJZD, N12345, G-ABCD, etc.
+    // Callsign patterns: JZA360, SWA218, UAL123, RPA3566, etc.
+    const isRegistration = /^[A-Z]{1,2}-[A-Z0-9]{1,5}$|^[A-Z]{1,2}[0-9]{1,6}[A-Z]$|^[A-Z]{1,2}[0-9]{1,6}$/.test(q)
+    const searchType = isRegistration ? 'registration' : 'callsign'
+    
     try {
-      const data = await fetchFlight(q)
+      const data = await fetchFlight(q, false, searchType)
       if (!data || !data.success) {
         setIsLoading(false) // Clear loading first
         // Small delay to ensure loading state is cleared before error shows
@@ -207,8 +384,26 @@ export default function FlightLookup() {
         setFlightData(null)
         return
       }
+      
+      // Check if this is a cache hit (same search query as before)
+      const isCacheHit = searchQuery.trim() === (flightData?.summary?.callsign || flightData?.callsign || '')
+      setIsFromCache(isCacheHit)
+      
+      if (isCacheHit) {
+        setShowCacheNotification(true)
+        // Hide cache notification after 3 seconds
+        setTimeout(() => setShowCacheNotification(false), 3000)
+      }
+      
       setFlightData(data)
       setIsLoading(false)
+      setLastUpdateTime(new Date()) // Set the last update time when search completes
+      
+      // Start per-flight cooldown (30s for this specific flight)
+      startFlightCooldown(q, 30000)
+      
+      // Optional soft cooldown after a successful search (3s)
+      startSearchCooldown(3000)
     } catch (e: any) {
       setIsLoading(false) // Clear loading first
       // Small delay to ensure loading state is cleared before error shows
@@ -219,7 +414,19 @@ export default function FlightLookup() {
         } else if (/401|403/.test(msg)) {
           setError('Authentication problem with flight data service')
         } else if (/429/.test(msg)) {
-          setError('Rate limited - please wait a moment before trying again')
+          // Handle rate limiting with cooldown
+          const retryAfter = e?.retryAfterSeconds || 10
+          const flight = e?.flight
+          
+          if (flight) {
+            // Per-flight rate limit
+            startFlightCooldown(flight, retryAfter * 1000)
+            setError(`You already searched for "${flight}" recently. Please wait ${retryAfter} seconds before searching for this flight again.`)
+          } else {
+            // General rate limit
+            startSearchCooldown(retryAfter * 1000)
+            setError(`Rate limited - please wait ${retryAfter} seconds before trying again`)
+          }
         } else if (/500|502|503/.test(msg)) {
           setError('Flight data service temporarily unavailable')
         } else {
@@ -300,63 +507,42 @@ export default function FlightLookup() {
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="p-2 bg-[var(--color-primary)] rounded-lg shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
-                <Plane className="h-6 w-6 text-white" />
+              <div 
+                className="cursor-pointer transition-all duration-300 hover:scale-105"
+                onClick={resetPage}
+                title="Reset page"
+              >
+                <img
+                  src={mounted && resolvedTheme === "dark" ? "/brand/logo-dark.png" : "/brand/logo-light.png"}
+                  alt="FlightNerd Logo"
+                  className="h-[50px] w-auto"
+                />
               </div>
               <div>
                 <h1 className="text-2xl font-serif font-black text-foreground">FlightNerd</h1>
                 <p className="text-sm text-muted-foreground">Real-time flight tracking & analytics</p>
 
               </div>
-              {!autoRefresh && (
-                <Badge variant="secondary" className="ml-4 bg-muted text-muted-foreground">
+              {/* Cache notification - only shows when data comes from cache */}
+              {showCacheNotification && (
+                <Badge variant="secondary" className="ml-4 bg-orange-600 text-white animate-in slide-in-from-right duration-300">
                   Cached ✓
                 </Badge>
               )}
             </div>
 
             <div className="flex items-center gap-2">
-              <Button 
-                variant="ghost" 
-                size="sm" 
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => {
-                  console.log('Test button clicked!');
-                  alert('Test button is working!');
+                  const newTheme = theme === "dark" ? "light" : "dark";
+                  setTheme(newTheme);
                 }}
-                className="hover:bg-muted/80 hover:bg-orange-100 dark:hover:bg-orange-500/20 hover:border-orange-300 dark:hover:border-orange-500 transition-all duration-200 border border-transparent text-foreground hover:text-foreground"
+                aria-label="Toggle theme"
+                className="hover:bg-muted/80 hover:bg-orange-100 dark:hover:bg-orange-500/20 hover:border-orange-300 dark:hover:border-orange-500 transition-all duration-200 min-w-[40px] min-h-[40px] rounded-md focus-visible:ring-2 focus-visible:ring-ring relative border border-transparent text-foreground hover:text-foreground"
               >
-                Test
-              </Button>
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                onClick={() => {
-                  try {
-                    navigator.clipboard.writeText(window.location.href);
-                    // Could add a toast notification here
-                  } catch (e) {
-                    console.error('Failed to copy link:', e);
-                  }
-                }}
-                className="hover:bg-muted/80 hover:bg-orange-100 dark:hover:bg-orange-500/20 hover:border-orange-300 dark:hover:border-orange-500 transition-all duration-200 border border-transparent text-foreground hover:text-foreground"
-              >
-                <Copy className="h-4 w-4 mr-2" />
-                Copy Link
-              </Button>
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                onClick={() => {
-                  try {
-                    window.print();
-                  } catch (e) {
-                    console.error('Failed to print:', e);
-                  }
-                }}
-                className="hover:bg-muted/80 hover:bg-orange-100 dark:hover:bg-orange-500/20 hover:border-orange-300 dark:hover:border-orange-500 transition-all duration-200 border border-transparent text-foreground hover:text-foreground"
-              >
-                <Printer className="h-4 w-4 mr-2" />
-                Print
+                {mounted && resolvedTheme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               </Button>
 
               <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
@@ -370,24 +556,35 @@ export default function FlightLookup() {
                     <Settings className="h-4 w-4" />
                   </Button>
                 </SheetTrigger>
-                <SheetContent className="w-[400px] sm:w-[540px]">
+                <SheetContent className="w-[400px] sm:w-[540px] overflow-y-auto scrollbar-hide">
                   <SheetHeader className="pb-6">
                     <SheetTitle className="text-2xl font-serif font-black text-foreground">Settings</SheetTitle>
                   </SheetHeader>
 
-                  <div className="px-4 space-y-6">
+                  <div className="px-4 space-y-6 pb-6">
                     <Card className="border-border/50 shadow-sm hover:shadow-md transition-all duration-300 rounded-xl">
-                      <CardHeader className="pb-4">
+                      <CardHeader className="pb-1">
                         <CardTitle className="text-lg font-semibold text-foreground">Units</CardTitle>
                       </CardHeader>
-                      <CardContent className="space-y-4">
-                        <div className="flex items-center justify-between p-4 bg-muted/20 rounded-lg hover:bg-muted/30 transition-all duration-300">
+                      <CardContent className="space-y-1 pt-0">
+                        <div className="flex items-center justify-between py-2 px-3 bg-muted/20 rounded-lg hover:bg-muted/30 transition-all duration-300">
                           <label className="text-sm font-medium text-foreground">Altitude</label>
                           <Select
                             value={units.altitude}
-                            onValueChange={(value) => saveSettings({ ...units, altitude: value })}
+                            onValueChange={(value) => {
+                              saveSettings({ ...units, altitude: value })
+                              closeDropdownHandler()
+                            }}
+                            onOpenChange={(open) => {
+                              if (open) {
+                                openDropdownHandler('altitude')
+                              } else {
+                                closeDropdownHandler()
+                              }
+                            }}
+                            open={openDropdown === 'altitude'}
                           >
-                            <SelectTrigger className="w-[100px] h-9 bg-background border-border hover:border-[var(--color-primary)]/30 focus:border-[var(--color-primary)] focus:ring-2 focus:ring-[var(--color-primary)]/20 transition-all duration-200">
+                            <SelectTrigger className="w-[90px] h-7 bg-background border-border hover:border-[var(--color-primary)]/30 focus:border-[var(--color-primary)] focus:ring-2 focus:ring-[var(--color-primary)]/20 transition-all duration-200">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent className="bg-background border-border shadow-lg">
@@ -407,13 +604,24 @@ export default function FlightLookup() {
                           </Select>
                         </div>
 
-                        <div className="flex items-center justify-between p-4 bg-muted/20 rounded-lg hover:bg-muted/30 transition-all duration-300">
+                        <div className="flex items-center justify-between py-2 px-3 bg-muted/20 rounded-lg hover:bg-muted/30 transition-all duration-300">
                           <label className="text-sm font-medium text-foreground">Speed</label>
                           <Select
                             value={units.speed}
-                            onValueChange={(value) => saveSettings({ ...units, speed: value })}
+                            onValueChange={(value) => {
+                              saveSettings({ ...units, speed: value })
+                              closeDropdownHandler()
+                            }}
+                            onOpenChange={(open) => {
+                              if (open) {
+                                openDropdownHandler('speed')
+                              } else {
+                                closeDropdownHandler()
+                              }
+                            }}
+                            open={openDropdown === 'speed'}
                           >
-                            <SelectTrigger className="w-[100px] h-9 bg-background border-border hover:border-[var(--color-primary)]/30 focus:border-[var(--color-primary)] focus:ring-2 focus:ring-[var(--color-primary)]/20 transition-all duration-200">
+                            <SelectTrigger className="w-[90px] h-7 bg-background border-border hover:border-[var(--color-primary)]/30 focus:border-[var(--color-primary)] focus:ring-2 focus:ring-[var(--color-primary)]/20 transition-all duration-200">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent className="bg-background border-border shadow-lg">
@@ -445,57 +653,74 @@ export default function FlightLookup() {
                       <CardHeader className="pb-4">
                         <CardTitle className="text-lg font-semibold text-foreground">Preferences</CardTitle>
                       </CardHeader>
-                      <CardContent>
+                      <CardContent className="space-y-4">
                         <div className="flex items-center justify-between p-4 bg-muted/20 rounded-lg hover:bg-muted/30 transition-all duration-300">
                           <div className="space-y-1">
                             <label className="text-sm font-medium text-foreground">Auto-refresh</label>
-                            <p className="text-xs text-muted-foreground">
-                              Automatically update flight data every 30 seconds
-                            </p>
                           </div>
-                          <div className="relative">
-                            <input
-                              type="checkbox"
-                              checked={autoRefresh}
-                              onChange={(e) => setAutoRefresh(e.target.checked)}
-                              className="sr-only"
-                              id="auto-refresh-toggle"
-                            />
-                            <label
-                              htmlFor="auto-refresh-toggle"
-                              className={`flex items-center cursor-pointer transition-all duration-200 ${
-                                autoRefresh
-                                  ? "text-[var(--color-primary)]"
-                                  : "text-muted-foreground hover:text-foreground"
-                              }`}
-                            >
-                              <div
-                                className={`relative w-12 h-6 rounded-full transition-all duration-200 ${
-                                  autoRefresh ? "bg-[var(--color-primary)]" : "bg-muted border-2 border-border"
-                                }`}
-                              >
-                                <div
-                                  className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-all duration-200 transform ${
-                                    autoRefresh ? "translate-x-6" : "translate-x-0"
-                                  }`}
-                                />
-                              </div>
-                            </label>
-                          </div>
+                          <Select
+                            value={autoRefresh ? refreshInterval.toString() : "off"}
+                            onValueChange={(value) => {
+                              if (value === "off") {
+                                setAutoRefresh(false)
+                              } else {
+                                setAutoRefresh(true)
+                                setRefreshInterval(parseInt(value) as 30 | 60 | 300 | 600)
+                              }
+                              closeDropdownHandler()
+                            }}
+                            onOpenChange={(open) => {
+                              if (open) {
+                                openDropdownHandler('auto-refresh')
+                              } else {
+                                closeDropdownHandler()
+                              }
+                            }}
+                            open={openDropdown === 'auto-refresh'}
+                          >
+                            <SelectTrigger className="w-[90px] h-9 bg-background border-border hover:border-[var(--color-primary)]/30 focus:border-[var(--color-primary)] focus:ring-2 focus:ring-[var(--color-primary)]/20 transition-all duration-200">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="bg-background border-border shadow-lg">
+                              <SelectItem value="off" className="hover:bg-[var(--color-primary)]/10 focus:bg-[var(--color-primary)]/10 text-foreground hover:text-foreground focus:text-foreground">
+                                Off
+                              </SelectItem>
+                              <SelectItem value="30" className="hover:bg-[var(--color-primary)]/10 focus:bg-[var(--color-primary)]/10 text-foreground hover:text-foreground focus:text-foreground">
+                                30 seconds
+                              </SelectItem>
+                              <SelectItem value="60" className="hover:bg-[var(--color-primary)]/10 focus:bg-[var(--color-primary)]/10 text-foreground hover:text-foreground focus:text-foreground">
+                                1 minute
+                              </SelectItem>
+                              <SelectItem value="300" className="hover:bg-[var(--color-primary)]/10 focus:bg-[var(--color-primary)]/10 text-foreground hover:text-foreground focus:text-foreground">
+                                5 minutes
+                              </SelectItem>
+                              <SelectItem value="600" className="hover:bg-[var(--color-primary)]/10 focus:bg-[var(--color-primary)]/10 text-foreground hover:text-foreground focus:text-foreground">
+                                10 minutes
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
 
                         <div className="flex items-center justify-between p-4 bg-muted/20 rounded-lg hover:bg-muted/30 transition-all duration-300">
                           <div className="space-y-1">
                             <label className="text-sm font-medium text-foreground">Time Display</label>
-                            <p className="text-xs text-muted-foreground">
-                              Choose between UTC and local time for flight times
-                            </p>
                           </div>
                           <Select
                             value={timezone}
-                            onValueChange={(value) => saveTimezone(value)}
+                            onValueChange={(value) => {
+                              saveTimezone(value)
+                              closeDropdownHandler()
+                            }}
+                            onOpenChange={(open) => {
+                              if (open) {
+                                openDropdownHandler('timezone')
+                              } else {
+                                closeDropdownHandler()
+                              }
+                            }}
+                            open={openDropdown === 'timezone'}
                           >
-                            <SelectTrigger className="w-[100px] h-9 bg-background border-border hover:border-[var(--color-primary)]/30 focus:border-[var(--color-primary)] focus:ring-2 focus:ring-[var(--color-primary)]/20 transition-all duration-200">
+                            <SelectTrigger className="w-[90px] h-9 bg-background border-border hover:border-[var(--color-primary)]/30 focus:border-[var(--color-primary)] focus:ring-2 focus:ring-[var(--color-primary)]/20 transition-all duration-200">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent className="bg-background border-border shadow-lg">
@@ -514,25 +739,14 @@ export default function FlightLookup() {
                             </SelectContent>
                           </Select>
                         </div>
+
+
                       </CardContent>
                     </Card>
                   </div>
                   {/* End of added padding container */}
                 </SheetContent>
               </Sheet>
-
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  const newTheme = theme === "dark" ? "light" : "dark";
-                  setTheme(newTheme);
-                }}
-                aria-label="Toggle theme"
-                className="hover:bg-muted/80 hover:bg-orange-100 dark:hover:bg-orange-500/20 hover:border-orange-300 dark:hover:border-orange-500 transition-all duration-200 min-w-[40px] min-h-[40px] rounded-md focus-visible:ring-2 focus-visible:ring-ring relative border border-transparent text-foreground hover:text-foreground"
-              >
-                {mounted && resolvedTheme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </Button>
             </div>
           </div>
         </div>
@@ -543,7 +757,7 @@ export default function FlightLookup() {
           <div className="text-center mb-8">
             <h2 className="text-4xl font-serif font-black text-foreground mb-4">Track Any Flight Worldwide</h2>
             <p className="text-lg text-muted-foreground">
-              Enter a flight number, callsign, or aircraft registration to get real-time tracking data
+              Enter a flight callsign or aircraft registration to get real-time tracking data
             </p>
           </div>
 
@@ -554,29 +768,52 @@ export default function FlightLookup() {
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-muted-foreground transition-colors duration-200" />
                   <Input
                     type="text"
-                    placeholder="Enter flight number (e.g., UAL1409, DAL934, AS1154...)"
+                    placeholder="Enter flight callsign or aircraft registration"
                     value={searchQuery}
                     onChange={(e) => {
                       const value = e.target.value;
-                      // Only allow letters and numbers, convert to uppercase
-                      const cleanValue = value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+                      // Allow letters, numbers, hyphens, and spaces for both callsigns and registrations
+                      let cleanValue = value.replace(/[^A-Za-z0-9\-\s]/g, '').toUpperCase();
+                      
+                      // Limit to maximum 8 characters
+                      if (cleanValue.length > 8) {
+                        cleanValue = cleanValue.substring(0, 8);
+                      }
+                      
+                      // Prevent typing more than one hyphen
+                      const hyphenCount = (cleanValue.match(/-/g) || []).length;
+                      if (hyphenCount > 1) {
+                        // Remove the last character if it would create a second hyphen
+                        cleanValue = cleanValue.slice(0, -1);
+                      }
+                      
                       setSearchQuery(cleanValue);
                     }}
                     onKeyDown={(e) => e.key === "Enter" && handleSearch()}
                     className="pl-10 h-12 text-lg !border-orange-500/20 focus:!ring-1 focus:!ring-orange-500/40 focus:!outline-none focus:!border-orange-500/40 transition-all duration-200 hover:!border-orange-500/25 focus-visible:!ring-1 focus-visible:!ring-orange-500/40 focus-visible:!ring-offset-0 shadow-none rounded-lg bg-background"
                     style={{ borderColor: 'rgb(249 115 22 / 0.2)' }}
-                    aria-label="Flight search input"
-                    disabled={isLoading}
+                    aria-label="Flight callsign or aircraft registration search input"
+                    disabled={isLoading || searchCooldownActive || isFlightOnCooldown(searchQuery.trim())}
                   />
                 </div>
                 <Button
                   onClick={handleSearch}
-                  disabled={isLoading}
+                  disabled={isLoading || searchCooldownActive || isFlightOnCooldown(searchQuery.trim())}
                   className="h-12 px-8 bg-[var(--color-primary)] hover:bg-[var(--color-primary)]/90 text-white font-semibold transition-all duration-200 hover:shadow-lg hover:scale-105 disabled:hover:scale-100 shadow-lg rounded-lg"
-                  aria-label="Search for flight"
+                  aria-label="Search for flight or aircraft"
                 >
                   {isLoading ? (
                     <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                  ) : searchCooldownActive ? (
+                    <>
+                      <Clock className="h-5 w-5 ml-1 mr-1" />
+                      Wait {Math.ceil(searchCooldownMs / 1000)}s
+                    </>
+                  ) : isFlightOnCooldown(searchQuery.trim()) ? (
+                    <>
+                      <Clock className="h-5 w-5 ml-1 mr-1" />
+                      {searchQuery.trim()} - {Math.ceil(getFlightCooldownMs(searchQuery.trim()) / 1000)}s
+                    </>
                   ) : (
                     <>
                       <Search className="h-5 w-5 ml-1 mr-1" />
@@ -585,22 +822,23 @@ export default function FlightLookup() {
                   )}
                 </Button>
               </div>
+
             </CardContent>
           </Card>
         </div>
 
         {/* Error Message Display */}
         {error && (
-          <div className={`fixed top-24 right-4 z-50 transition-all duration-500 ease-in-out transform ${
+          <div className={`fixed top-29 right-7 z-50 transition-all duration-500 ease-in-out transform scale-105 ${
             showError ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'
           }`}>
-            <div className="bg-red-500 text-white px-4 py-3 rounded-lg shadow-lg border border-red-600 max-w-sm">
+            <div className="bg-red-500 text-white px-3 py-2 rounded-lg shadow-lg border border-red-600 max-w-xs">
               <div className="flex items-center gap-2">
-                <div className="w-2 h-2 bg-white rounded-full"></div>
-                <span className="font-medium">Flight not active</span>
+                <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
+                <span className="font-medium text-sm">Flight not active</span>
               </div>
-              <p className="text-red-100 text-sm mt-1">
-                This flight isn't currently available
+              <p className="text-red-100 text-xs mt-1">
+                This flight isn't currently available, or has disappeared from our satellites... 
               </p>
             </div>
           </div>
@@ -611,9 +849,11 @@ export default function FlightLookup() {
             <div className="mb-6">
               <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
                 <div>
-                  <h3 className="text-3xl font-sans font-semibold text-foreground mb-2 tracking-tight">
-                    Flight {flightData.summary?.callsign || flightData.callsign || 'N/A'}
-                  </h3>
+                  <div className="flex items-center gap-3 mb-2">
+                    <h3 className="text-xl font-bold text-foreground">
+                      Flight {flightData.summary?.callsign || flightData.callsign || 'N/A'}
+                    </h3>
+                  </div>
                   <div className="flex flex-wrap items-center gap-4 text-muted-foreground">
                     <span>{flightData.airlineName || flightData.airline || 'N/A'}</span>
                     <Separator orientation="vertical" className="h-4 hidden sm:block" />
@@ -766,14 +1006,7 @@ export default function FlightLookup() {
                       </div>
                     </Card>
 
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">ETA</div>
-                        <div className="text-lg font-bold text-foreground">
-                          {formatTime(flightData.eta, timezone)}
-                        </div>
-                      </div>
-                    </Card>
+
 
                     <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
                       <div className="text-center space-y-2">
@@ -786,7 +1019,7 @@ export default function FlightLookup() {
                   <div className="mt-4 pt-4 border-t border-border">
                     <div className="flex justify-center items-center text-sm">
                       <span className="text-muted-foreground">
-                        Last Update: <TimeAgo timestamp={flightData.lastPosition?.timestamp || flightData.lastUpdate || Date.now()} />
+                        Last Update: <TimeAgo timestamp={lastUpdateTime || flightData.lastPosition?.timestamp || flightData.lastUpdate || Date.now()} />
                       </span>
                     </div>
                   </div>
@@ -824,9 +1057,7 @@ export default function FlightLookup() {
                           {flightData.registration && (
                             <div><span className="font-semibold">Registration:</span> <span>{flightData.registration}</span></div>
                           )}
-                          {flightData.eta && (
-                            <div><span className="font-semibold">ETA:</span> <span>{formatTime(flightData.eta, timezone)}</span></div>
-                          )}
+
                         </div>
                         <div className="mt-4 flex justify-center">
                           <BadgeStatus status={flightData.summary?.status || flightData.status || 'UNKNOWN'} />
@@ -841,30 +1072,36 @@ export default function FlightLookup() {
                     <CardTitle>Quick Actions</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start bg-transparent hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:translate-x-1 rounded-lg"
-                    >
-                      <MapPin className="h-4 w-4 mr-2" />
-                      View on Map
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start bg-transparent hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:translate-x-1 rounded-lg"
-                    >
-                      <Clock className="h-4 w-4 mr-2" />
-                      Flight History
-                    </Button>
+                    <div className="p-4 bg-muted/20 border-border/50 rounded-lg hover:border-[var(--color-primary)]/30 transition-all duration-200">
+                      <Button
+                        variant="outline"
+                        className="w-full justify-start bg-transparent hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:scale-102 rounded-lg text-white hover:text-white"
+                      >
+                        <MapPin className="h-4 w-4 mr-2" />
+                        View on Map
+                      </Button>
+                    </div>
+                    <div className="p-4 bg-muted/20 border-border/50 rounded-lg hover:border-[var(--color-primary)]/30 transition-all duration-200">
+                      <Button
+                        variant="outline"
+                        className="w-full justify-start bg-transparent hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:scale-102 rounded-lg text-white hover:text-white"
+                      >
+                        <Clock className="h-4 w-4 mr-2" />
+                        Flight History
+                      </Button>
+                    </div>
 
                     <Dialog open={jsonModalOpen} onOpenChange={setJsonModalOpen}>
                       <DialogTrigger asChild>
-                        <Button
-                          variant="outline"
-                          className="w-full justify-start bg-transparent hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:translate-x-1 rounded-lg"
-                        >
-                          <Code className="h-4 w-4 mr-2" />
-                          Raw JSON
-                        </Button>
+                        <div className="p-4 bg-muted/20 border-border/50 rounded-lg hover:border-[var(--color-primary)]/30 transition-all duration-200">
+                          <Button
+                            variant="outline"
+                            className="w-full justify-start bg-transparent hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:scale-102 rounded-lg text-white hover:text-white"
+                          >
+                            <Code className="h-4 w-4 mr-2" />
+                            Raw JSON
+                          </Button>
+                        </div>
                       </DialogTrigger>
                       <DialogContent className="max-w-4xl max-h-[80vh] overflow-hidden">
                         <DialogHeader>
@@ -895,6 +1132,40 @@ export default function FlightLookup() {
                         </div>
                       </DialogContent>
                     </Dialog>
+                    
+                    <div className="p-4 bg-muted/20 border-border/50 rounded-lg hover:border-[var(--color-primary)]/30 transition-all duration-200">
+                      <Button
+                        variant="outline"
+                        className="w-full justify-start bg-transparent hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:scale-102 rounded-lg text-white hover:text-white"
+                        onClick={() => {
+                          if (flightData?.summary?.callsign || flightData?.callsign) {
+                            const callsign = flightData?.summary?.callsign || flightData?.callsign
+                            const url = `https://www.flightradar24.com/${callsign}/`
+                            
+                            // Copy to clipboard as backup
+                            try {
+                              navigator.clipboard.writeText(url)
+                              console.log('FlightRadar24 URL copied to clipboard:', url)
+                            } catch (e) {
+                              console.error('Failed to copy to clipboard:', e)
+                            }
+                            
+                            // Create a temporary link element and click it (simulates user click)
+                            const link = document.createElement('a')
+                            link.href = url
+                            link.target = '_blank'
+                            link.rel = 'noopener noreferrer'
+                            document.body.appendChild(link)
+                            link.click()
+                            document.body.removeChild(link)
+                          }
+                        }}
+                        disabled={!flightData?.summary?.callsign && !flightData?.callsign}
+                      >
+                        <ExternalLink className="h-4 w-4 mr-2" />
+                        View on FlightRadar24
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
               </div>
@@ -925,9 +1196,11 @@ export default function FlightLookup() {
             {/* Company Info */}
             <div className="space-y-4">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-[var(--color-primary)] rounded-lg shadow-lg">
-                  <Plane className="h-5 w-5 text-white" />
-                </div>
+                <img
+                  src={mounted && resolvedTheme === "dark" ? "/brand/logo-dark.png" : "/brand/logo-light.png"}
+                  alt="FlightNerd Logo"
+                  className="h-10 w-auto"
+                />
                 <h3 className="text-xl font-serif font-black text-foreground">FlightNerd</h3>
               </div>
               <p className="text-sm text-muted-foreground leading-relaxed">

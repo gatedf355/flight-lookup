@@ -55,7 +55,7 @@ export default function SimpleRouteProgress({ originCode, destCode, position }: 
   const pct = data.progress.pct;
 
   return (
-    <div className="p-4 border rounded bg-green-50">
+    <div className="p-4 border rounded bg-orange-50">
       <h3 className="font-bold mb-2">Route Progress</h3>
       <div className="space-y-2">
         <div className="flex justify-between text-sm">

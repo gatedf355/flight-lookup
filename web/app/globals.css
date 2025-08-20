@@ -9,7 +9,7 @@
   --card-foreground: #374151;
   --popover: #ffffff;
   --popover-foreground: #374151;
-  --primary: #15803d;
+  --primary: #ea580c;
   --primary-foreground: #ffffff;
   --secondary: #84cc16;
   --secondary-foreground: #ffffff;
@@ -21,8 +21,8 @@
   --destructive-foreground: #ffffff;
   --border: #e5e7eb;
   --input: #ffffff;
-  --ring: rgba(21, 130, 61, 0.5);
-  --chart-1: #15803d;
+  --ring: rgba(234, 88, 12, 0.5);
+  --chart-1: #ea580c;
   --chart-2: #84cc16;
   --chart-3: #f97316;
   --chart-4: #dc2626;
@@ -35,10 +35,10 @@
   --sidebar-accent: #84cc16;
   --sidebar-accent-foreground: #ffffff;
   --sidebar-border: #e5e7eb;
-  --sidebar-ring: rgba(21, 130, 61, 0.5);
+  --sidebar-ring: rgba(234, 88, 12, 0.5);
 
   /* Added dynamic color scheme variables */
-  --color-primary: hsl(142, 76%, 36%);
+  --color-primary: hsl(20, 91%, 48%);
   --color-accent: hsl(84, 81%, 44%);
 }
 
@@ -49,7 +49,7 @@
   --card-foreground: #f1f5f9;
   --popover: #1e293b;
   --popover-foreground: #f1f5f9;
-  --primary: #22c55e;
+  --primary: #f97316;
   --primary-foreground: #0f172a;
   --secondary: #84cc16;
   --secondary-foreground: #0f172a;
@@ -61,8 +61,8 @@
   --destructive-foreground: #f1f5f9;
   --border: #334155;
   --input: #1e293b;
-  --ring: rgba(34, 197, 94, 0.5);
-  --chart-1: #22c55e;
+  --ring: rgba(249, 115, 22, 0.5);
+  --chart-1: #f97316;
   --chart-2: #84cc16;
   --chart-3: #f97316;
   --chart-4: #ef4444;
@@ -74,7 +74,7 @@
   --sidebar-accent: #84cc16;
   --sidebar-accent-foreground: #0f172a;
   --sidebar-border: #334155;
-  --sidebar-ring: rgba(34, 197, 94, 0.5);
+  --sidebar-ring: rgba(249, 115, 22, 0.5);
 }
 
 @theme inline {
@@ -133,4 +133,33 @@
   h6 {
     @apply font-serif font-black;
   }
+}
+
+/* Hide scrollbar */
+html {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* Internet Explorer 10+ */
+}
+
+html::-webkit-scrollbar {
+  display: none; /* WebKit browsers (Chrome, Safari, Edge) */
+}
+
+body {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* Internet Explorer 10+ */
+}
+
+body::-webkit-scrollbar {
+  display: none; /* WebKit browsers (Chrome, Safari, Edge) */
+}
+
+/* Hide scrollbar for settings panel while maintaining scroll functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* Internet Explorer 10+ */
+  scrollbar-width: none;  /* Firefox */
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;  /* Safari and Chrome */
 }
