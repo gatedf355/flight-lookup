@@ -13,19 +13,22 @@ export async function GET(request: Request) {
   let searchCallsign = callsign;
   let originalQuery = callsign;
   
-  // Check if input is a 2-3 character IATA airline code
-  if (callsign.length >= 2 && callsign.length <= 3 && /^[A-Z]{2,3}$/.test(callsign)) {
-    // Import the airline database functions
+    // Check if input starts with a 2-3 character IATA airline code
+  const airlineCodeMatch = callsign.match(/^([A-Z]{2,3})/);
+  if (airlineCodeMatch) {
+    const airlineCode = airlineCodeMatch[1];
+    // Try to find the airline by IATA code
     const { getAirlineByCode } = await import('@/lib/airlineDatabase');
     
-    // Try to find the airline by IATA code
-    const airline = getAirlineByCode(callsign);
+    const airline = getAirlineByCode(airlineCode);
     if (airline && airline.icao) {
-      // Convert to ICAO callsign format (e.g., "BA" -> "BAW178")
-      // For now, we'll try a common flight number pattern
-      searchCallsign = `${airline.icao}178`;
-      console.log(`Converting IATA code "${callsign}" to ICAO callsign "${searchCallsign}"`);
+      // Extract the flight number part (everything after the airline code)
+      const flightNumber = callsign.substring(airlineCode.length);
+      // Convert to ICAO callsign format (e.g., "BA178" -> "BAW178")
+      searchCallsign = `${airline.icao}${flightNumber}`;
+      console.log(`Converting IATA code "${airlineCode}" to ICAO callsign "${searchCallsign}" (original: "${callsign}")`);
     }
+  }
   }
 
   // Call the Cloudflare Worker backend directly
