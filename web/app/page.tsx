@@ -34,7 +34,7 @@ import { useHotkeys } from "@/hooks/use-hotkeys"
 // Removed fetchFlight import - now using direct FR24 API calls
 import RouteProgress from "@/components/RouteProgress"
 import { normalizeFlight, UiFlight } from '@/lib/normalizeFlight'
-import { getAirlineNameByCallsign, getAirlineNameByCode } from '@/lib/airlineDatabase'
+import { getAirlineNameByCallsign, getAirlineNameByCode, getAirlineByCode } from '@/lib/airlineDatabase'
 import { flightCache, FlightPhase } from '@/lib/flightCache'
 import WeatherSelector from "@/components/WeatherSelector"
 // import WeatherSelector from "@/components/WeatherSelector"
@@ -534,10 +534,26 @@ export default function FlightLookup() {
         return
       }
       
+      // Convert IATA code to ICAO callsign if needed
+      let searchCallsign = q
+      let originalQuery = q
+      
+      // Check if input is a 2-3 character IATA airline code
+      if (q.length >= 2 && q.length <= 3 && /^[A-Z]{2,3}$/.test(q)) {
+        // Try to find the airline by IATA code
+        const airline = getAirlineByCode(q)
+        if (airline && airline.icao) {
+          // Convert to ICAO callsign format (e.g., "BA" -> "BAW178")
+          // For now, we'll try a common flight number pattern
+          searchCallsign = `${airline.icao}178`
+          console.log(`Converting IATA code "${q}" to ICAO callsign "${searchCallsign}"`)
+        }
+      }
+      
       // Performance optimized
       // Fetch live flight data directly from FR24 API
       
-      const liveResponse = await fetch(`https://fr24api.flightradar24.com/api/live/flight-positions/full?callsigns=${encodeURIComponent(q)}`, {
+      const liveResponse = await fetch(`https://fr24api.flightradar24.com/api/live/flight-positions/full?callsigns=${encodeURIComponent(searchCallsign)}`, {
         headers: {
           'accept': 'application/json',
           'accept-version': 'v1',
@@ -549,8 +565,12 @@ export default function FlightLookup() {
         const errorText = await liveResponse.text();
         
         setIsLoading(false);
+        const errorMessage = searchCallsign !== originalQuery 
+          ? `Flight not found. Tried searching for "${searchCallsign}" (converted from "${originalQuery}")`
+          : 'Flight not found or currently inactive'
+        
         setTimeout(() => {
-          setError('Flight not found or currently inactive')
+          setError(errorMessage)
         }, 50);
         setFlightData(null);
         setRawApiResponse(null);
@@ -564,8 +584,12 @@ export default function FlightLookup() {
       
       if (!liveData.data || liveData.data.length === 0) {
         setIsLoading(false);
+        const errorMessage = searchCallsign !== originalQuery 
+          ? `Flight not found. Tried searching for "${searchCallsign}" (converted from "${originalQuery}")`
+          : 'Flight not found or currently inactive'
+        
         setTimeout(() => {
-          setError('Flight not found or currently inactive')
+          setError(errorMessage)
         }, 50);
         setFlightData(null);
         return;
