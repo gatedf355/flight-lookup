@@ -34,6 +34,10 @@ import { useHotkeys } from "@/hooks/use-hotkeys"
 // Removed fetchFlight import - now using direct FR24 API calls
 import RouteProgress from "@/components/RouteProgress"
 import { normalizeFlight, UiFlight } from '@/lib/normalizeFlight'
+import { getAirlineNameByCallsign, getAirlineNameByCode } from '@/lib/airlineDatabase'
+import { flightCache, FlightPhase } from '@/lib/flightCache'
+import WeatherSelector from "@/components/WeatherSelector"
+// import WeatherSelector from "@/components/WeatherSelector"
 
 
 
@@ -50,6 +54,101 @@ const formatTime = (timestamp: string | number, timezone: string) => {
     }
   } catch (error) {
     return 'Invalid time'
+  }
+}
+
+// Helper function to derive airline name from callsign or code
+const getAirlineNameFromCallsign = (callsign: string): string => {
+  // First try to get airline name by the full callsign
+  const airlineName = getAirlineNameByCallsign(callsign)
+  if (airlineName && airlineName !== 'Unknown') {
+    return airlineName
+  }
+  
+  // If that fails, try to extract the airline code (first 2-3 characters)
+  if (callsign.length >= 2) {
+    const airlineCode = callsign.substring(0, callsign.match(/[0-9]/)?.index || callsign.length)
+    if (airlineCode) {
+      const codeAirlineName = getAirlineNameByCode(airlineCode)
+      if (codeAirlineName) {
+        return codeAirlineName
+      }
+    }
+  }
+  
+  return 'Unknown'
+}
+
+// Unit conversion functions
+const convertAltitude = (altitudeFt: number, targetUnit: string): { value: number, unit: string } => {
+  if (targetUnit === 'm') {
+    const result = { value: Math.round(altitudeFt * 0.3048), unit: 'm' }
+    return result
+  }
+  const result = { value: altitudeFt, unit: 'ft' }
+  return result
+}
+
+const convertSpeed = (speedKt: number, targetUnit: string): { value: number, unit: string } => {
+  if (targetUnit === 'kmh') {
+    const result = { value: Math.round(speedKt * 1.852), unit: 'km/h' }
+    return result
+  } else if (targetUnit === 'mph') {
+    const result = { value: Math.round(speedKt * 1.15078), unit: 'mph' }
+    return result
+  }
+  const result = { value: speedKt, unit: 'kt' }
+  return result
+}
+
+const convertVerticalSpeed = (vspeedFtMin: number, targetUnit: string): { value: number, unit: string } => {
+  if (targetUnit === 'm') {
+    const result = { value: Math.round(vspeedFtMin * 0.3048), unit: 'm/min' }
+    return result
+  }
+  const result = { value: vspeedFtMin, unit: 'ft/min' }
+  return result
+}
+
+// Flight countdown calculation based on ETA and progress
+const calculateFlightCountdown = (flightData: any): { timeLeft: string; isDelayed: boolean; progressPercent: number } => {
+  if (!flightData?.live?.eta || !flightData?.live?.timestamp) {
+    return { timeLeft: 'N/A', isDelayed: false, progressPercent: 0 }
+  }
+
+  try {
+    const now = new Date()
+    const eta = new Date(flightData.live.eta)
+    const lastUpdate = new Date(flightData.live.timestamp)
+    
+    // Calculate time remaining until ETA
+    const timeUntilEta = eta.getTime() - now.getTime()
+    const minutesUntilEta = Math.floor(timeUntilEta / (1000 * 60))
+    
+    // Calculate progress based on time elapsed vs total flight time
+    // Estimate total flight time from origin to destination
+    const totalFlightTimeMs = eta.getTime() - lastUpdate.getTime()
+    const elapsedTimeMs = now.getTime() - lastUpdate.getTime()
+    const progressPercent = Math.min(Math.max((elapsedTimeMs / totalFlightTimeMs) * 100, 0), 100)
+    
+    // Format time remaining
+    let timeLeft: string
+    if (minutesUntilEta <= 0) {
+      timeLeft = 'Arriving now'
+    } else if (minutesUntilEta < 60) {
+      timeLeft = `${minutesUntilEta}m remaining`
+    } else {
+      const hours = Math.floor(minutesUntilEta / 60)
+      const minutes = minutesUntilEta % 60
+      timeLeft = `${hours}h ${minutes}m remaining`
+    }
+    
+    // Check if flight is delayed (ETA is in the past)
+    const isDelayed = minutesUntilEta < -5 // 5 minute buffer
+    
+    return { timeLeft, isDelayed, progressPercent }
+  } catch (error) {
+    return { timeLeft: 'N/A', isDelayed: false, progressPercent: 0 }
   }
 }
 
@@ -99,7 +198,7 @@ export default function FlightLookup() {
       "Contact": "https://mail.google.com/mail/?view=cm&to=skynerdinfo@gmail.com&su=Contact from SkyNerd"
     },
     support: {
-      "Help Center": "https://www.faa.gov/",
+      "FAA Help Center": "https://www.faa.gov/",
       "Documentation": "https://fr24api.flightradar24.com/docs/getting-started",
       "Privacy Policy": "#",
       "Terms of Service": "#",
@@ -123,7 +222,7 @@ export default function FlightLookup() {
   const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null)
   const [timeSinceUpdate, setTimeSinceUpdate] = useState<string>('')
   const [isFromCache, setIsFromCache] = useState(false)
-  const [showCacheNotification, setShowCacheNotification] = useState(false)
+
   const [openDropdown, setOpenDropdown] = useState<string | null>(null)
   const [dropdownTimeout, setDropdownTimeout] = useState<NodeJS.Timeout | null>(null)
   const [units, setUnits] = useState({ altitude: "ft", speed: "kt", distance: "nm" })
@@ -254,7 +353,7 @@ export default function FlightLookup() {
     setLastUpdateTime(null)
     setTimeSinceUpdate('')
     setIsFromCache(false)
-    setShowCacheNotification(false)
+    
     setJsonModalOpen(false)
     setJsonFilter('')
     closeDropdownHandler()
@@ -371,13 +470,9 @@ export default function FlightLookup() {
   // Debug: Log when flightData changes
   useEffect(() => {
     if (flightData) {
-      console.log('🖥️ flightData changed to:', JSON.stringify(flightData, null, 2));
-      console.log('🖥️ flightData.squawk:', flightData.squawk);
-      console.log('🖥️ flightData.altitude:', flightData.altitude);
-      console.log('🖥️ flightData.groundSpeed:', flightData.groundSpeed);
-      console.log('🖥️ flightData.track:', flightData.track);
+      
     }
-  }, [flightData])
+  }, [flightData, units])
 
   // Check for unsaved changes whenever pending settings change
   useEffect(() => {
@@ -422,7 +517,24 @@ export default function FlightLookup() {
     const searchType = isRegistration ? 'registration' : 'callsign'
     
     try {
-              // Performance optimized
+      // Check cache first for per-user caching
+      const cachedFlight = flightCache.getCachedFlight(q, isRegistration ? q : undefined)
+      
+      if (cachedFlight) {
+
+        setFlightData(cachedFlight.data)
+        setRawApiResponse(cachedFlight.data)
+        setIsLoading(false)
+        setLastUpdateTime(new Date(cachedFlight.timestamp))
+        setIsFromCache(true)
+
+        
+        // Start per-flight cooldown based on cache refresh interval
+        startFlightCooldown(q, cachedFlight.refreshInterval)
+        return
+      }
+      
+      // Performance optimized
       // Fetch live flight data directly from FR24 API
       
       const liveResponse = await fetch(`https://fr24api.flightradar24.com/api/live/flight-positions/full?callsigns=${encodeURIComponent(q)}`, {
@@ -470,6 +582,7 @@ export default function FlightLookup() {
           iata: liveFlight.airline_code || '',
           icao: liveFlight.airline_code || ''
         },
+        airlineName: liveFlight.airlineName || getAirlineNameFromCallsign(liveFlight.callsign || q),
         origin: {
           iata: liveFlight.orig_iata || '',
           icao: liveFlight.orig_iata || '',
@@ -522,13 +635,18 @@ export default function FlightLookup() {
         }
       };
       
+      // Store in per-user cache for adaptive refresh rates
+      const newCachedFlight = flightCache.setCachedFlight(q, isRegistration ? q : undefined, normalizedFlight)
+      
       // Set flight data
       setFlightData(normalizedFlight);
       setIsLoading(false);
       setLastUpdateTime(new Date());
       
-      // Start per-flight cooldown (30s for this specific flight)
-      startFlightCooldown(q, 30000)
+      // Start per-flight cooldown based on flight phase
+      startFlightCooldown(q, newCachedFlight.refreshInterval)
+      
+      
     } catch (e: any) {
       setIsLoading(false) // Clear loading first
       // Small delay to ensure loading state is cleared before error shows
@@ -563,30 +681,140 @@ export default function FlightLookup() {
 
   // Hotkeys
 
-  // Auto-refresh based on selected interval only when document is visible
+  // Auto-refresh based on flight phase and cache system
   useEffect(() => {
     if (!autoRefresh || !flightData || !searchQuery.trim()) return
 
+    // Get the optimal refresh interval based on current flight phase
+    const flightPhase = flightCache.detectFlightPhase(flightData)
+    const refreshInterval = flightCache.getRefreshInterval(flightPhase)
+    
+    console.log('🔄 Setting up auto-refresh:', flightPhase.phase, 'every', refreshInterval/1000, 'seconds')
+
     const interval = setInterval(async () => {
       if (document.visibilityState === 'visible') {
+        console.log('🔄 Auto-refresh triggered for phase:', flightPhase.phase)
         
-        // Check if this is a cache hit before making the request
-        const currentCallsign = flightData?.callsign || ''
-        const isCacheHit = searchQuery.trim() === currentCallsign
+        // Show a subtle loading indicator during auto-refresh
+        setIsLoading(true)
         
-        if (isCacheHit) {
-          // Show cache notification for auto-refresh cache hits
-          setIsFromCache(true)
-          setShowCacheNotification(true)
-          setTimeout(() => setShowCacheNotification(false), 3000)
+        try {
+          const q = searchQuery.trim()
+          
+          // Check if we can use cached data first
+          const cachedFlight = await flightCache.getCachedFlight(q, flightData.registration)
+          
+          if (cachedFlight && !flightCache.hasSignificantChanges(flightData, cachedFlight.data)) {
+            // Data hasn't changed significantly, update timestamp but keep current data
+            setLastUpdateTime(new Date(cachedFlight.timestamp))
+            setIsFromCache(true)
+            console.log('📋 Using cached data - no significant changes')
+            
+    
+          } else {
+            // Fetch fresh data
+            console.log('🆕 Fetching fresh data from API')
+            const liveResponse = await fetch(`https://fr24api.flightradar24.com/api/live/flight-positions/full?callsigns=${encodeURIComponent(q)}`, {
+              headers: {
+                'accept': 'application/json',
+                'accept-version': 'v1',
+                'authorization': 'Bearer 0198afd4-a5c1-72d7-9072-5a42113e733e|mjIwxXbV48fYINDljWplQtzAD2gXMQ3t1j9MzEP6ed77aa43'
+              }
+            })
+            
+            if (liveResponse.ok) {
+              const liveData = await liveResponse.json()
+              if (liveData && liveData.data && liveData.data.length > 0) {
+                const liveFlight = liveData.data[0]
+                
+                // Create normalized flight data from live data (same as main search)
+                const normalizedFlight: UiFlight = {
+                  callsign: liveFlight.callsign || searchQuery.trim(),
+                  number: liveFlight.callsign || searchQuery.trim(),
+                  airline: {
+                    name: liveFlight.airline || 'Unknown',
+                    iata: liveFlight.airline_code || '',
+                    icao: liveFlight.airline_code || ''
+                  },
+                  airlineName: liveFlight.airlineName || getAirlineNameFromCallsign(liveFlight.callsign || searchQuery.trim()),
+                  origin: {
+                    iata: liveFlight.orig_iata || '',
+                    icao: liveFlight.orig_iata || '',
+                    name: liveFlight.orig_name || 'Unknown'
+                  },
+                  destination: {
+                    iata: liveFlight.dest_iata || '',
+                    icao: liveFlight.dest_iata || '',
+                    name: liveFlight.dest_name || 'Unknown'
+                  },
+                  position: {
+                    lat: liveFlight.lat,
+                    lon: liveFlight.lon
+                  },
+                  status: {
+                    live: true
+                  },
+                  route: liveFlight.orig_iata && liveFlight.dest_iata ? `${liveFlight.orig_iata} → ${liveFlight.dest_iata}` : 'Unknown',
+                  source: 'FR24 Live',
+                  // Live telemetry data
+                  altitude: liveFlight.alt,
+                  groundSpeed: liveFlight.gspeed,
+                  track: liveFlight.track,
+                  verticalSpeed: liveFlight.vspeed,
+                  squawk: liveFlight.squawk,
+                  registration: liveFlight.reg,
+                  hex: liveFlight.hex,
+                  aircraft: liveFlight.type,
+                  // Additional live data
+                  live: {
+                    lat: liveFlight.lat,
+                    lon: liveFlight.lon,
+                    alt: liveFlight.alt,
+                    gspeed: liveFlight.gspeed,
+                    squawk: liveFlight.squawk,
+                    track: liveFlight.track,
+                    vspeed: liveFlight.vspeed,
+                    timestamp: liveFlight.timestamp,
+                    source: liveFlight.source,
+                    hex: liveFlight.hex,
+                    type: liveFlight.type,
+                    reg: liveFlight.reg,
+                    painted_as: liveFlight.painted_as,
+                    operating_as: liveFlight.operating_as,
+                    orig_iata: liveFlight.orig_iata,
+                    orig_icao: liveFlight.orig_iata,
+                    dest_iata: liveFlight.dest_iata,
+                    dest_icao: liveFlight.dest_iata,
+                    eta: liveFlight.eta
+                  }
+                }
+                
+                // Update cache with new data
+                const updatedCachedFlight = flightCache.setCachedFlight(q, flightData.registration, normalizedFlight)
+                
+                setFlightData(normalizedFlight)
+                setRawApiResponse(liveData)
+                setLastUpdateTime(new Date()) // Reset the timer
+                setIsFromCache(false)
+        
+              } else {
+                setIsLoading(false) // Clear loading state on error
+              }
+            } else {
+              setIsLoading(false) // Clear loading state on error
+            }
+          }
+        } catch (error) {
+          console.error('❌ Auto-refresh failed:', error)
+          setIsLoading(false) // Clear loading state on error
         }
         
-        handleSearch()
+        setIsLoading(false) // Clear loading state
       }
-    }, refreshInterval * 1000) // Use selected interval
+    }, refreshInterval) // Dynamic interval based on flight phase
 
     return () => clearInterval(interval)
-  }, [autoRefresh, flightData, searchQuery, refreshInterval, handleSearch])
+  }, [autoRefresh, searchQuery, flightData]) // Added flightData back to dependencies
 
   // Update the "time since last update" display every second
   useEffect(() => {
@@ -610,6 +838,18 @@ export default function FlightLookup() {
 
     return () => clearInterval(interval)
   }, [lastUpdateTime])
+
+  // Update flight countdown every minute
+  useEffect(() => {
+    if (!flightData?.live?.eta) return
+
+    const interval = setInterval(() => {
+      // Force re-render to update countdown
+      setLastUpdateTime(new Date())
+    }, 60000) // Update every minute
+
+    return () => clearInterval(interval)
+  }, [flightData?.live?.eta])
 
 
 
@@ -731,12 +971,17 @@ export default function FlightLookup() {
                 <p className="text-sm text-muted-foreground">Real-time flight tracking & analytics</p>
 
               </div>
-              {/* Cache notification - only shows when data comes from cache */}
-              {showCacheNotification && (
-                <Badge variant="secondary" className="ml-4 bg-orange-600 text-white animate-in slide-in-from-right duration-300">
-                  Cached ✓
-                </Badge>
-              )}
+
+            </div>
+
+            {/* Discord Server Button - Centered */}
+            <div className="absolute left-1/2 transform -translate-x-1/2">
+              <Button
+                onClick={() => window.open('https://discord.gg/uzhJu8MrCE', '_blank')}
+                className="bg-lime-500 hover:bg-lime-600 text-black font-bold text-lg px-2 py-3 rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200 border-2 border-lime-400 hover:border-lime-500"
+              >
+                Join the Discord Server
+              </Button>
             </div>
 
             <div className="flex items-center gap-2">
@@ -857,12 +1102,14 @@ export default function FlightLookup() {
                       </CardContent>
                     </Card>
 
+
+
                     <Card className="border-border/50 shadow-sm hover:shadow-md transition-all duration-300 rounded-xl">
                       <CardHeader className="pb-4">
                         <CardTitle className="text-lg font-semibold text-foreground">Preferences</CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-4">
-                        <div className="flex items-center justify-between p-4 bg-muted/20 rounded-lg hover:bg-muted/30 transition-all duration-300">
+                        <div className="flex items-center justify-between p-4 bg-muted/20 rounded-lg hover:bg-muted/30 transition-all duration-300 -mt-1">
                           <div className="space-y-1">
                             <label className="text-sm font-medium text-foreground">Time Display</label>
                           </div>
@@ -930,7 +1177,7 @@ export default function FlightLookup() {
           <div className="text-center mb-8">
             <h2 className="text-4xl font-serif font-black text-foreground mb-4">Track Any Flight Worldwide</h2>
             <p className="text-lg text-muted-foreground">
-              Enter a flight callsign or aircraft registration to get real-time tracking data
+              Enter a flight callsign, IATA/ICAO code, or aircraft registration to get real-time tracking data
             </p>
           </div>
 
@@ -941,7 +1188,7 @@ export default function FlightLookup() {
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-muted-foreground transition-colors duration-200" />
                   <Input
                     type="text"
-                    placeholder="Enter flight callsign or aircraft registration"
+                    placeholder="Enter flight callsign, IATA/ICAO code, or aircraft registration"
                     value={searchQuery}
                     onChange={(e) => {
                       const value = e.target.value;
@@ -965,7 +1212,7 @@ export default function FlightLookup() {
                     onKeyDown={(e) => e.key === "Enter" && handleSearch()}
                     className="pl-10 h-12 text-lg !border-orange-500/20 focus:!ring-1 focus:!ring-orange-500/40 focus:!outline-none focus:!border-orange-500/40 transition-all duration-200 hover:!border-orange-500/25 focus-visible:!ring-1 focus-visible:!ring-orange-500/40 focus-visible:!ring-offset-0 shadow-none rounded-lg bg-background"
                     style={{ borderColor: 'rgb(249 115 22 / 0.2)' }}
-                    aria-label="Flight callsign or aircraft registration search input"
+                    aria-label="Flight callsign, IATA/ICAO code, or aircraft registration search input"
                     disabled={isLoading}
                   />
                 </div>
@@ -973,7 +1220,7 @@ export default function FlightLookup() {
                   onClick={handleSearch}
                   disabled={isLoading || isFlightOnCooldown(searchQuery.trim())}
                   className="h-12 px-8 bg-[var(--color-primary)] hover:bg-[var(--color-primary)]/90 text-white font-semibold transition-all duration-200 hover:shadow-lg hover:scale-105 disabled:hover:scale-100 shadow-lg rounded-lg"
-                  aria-label="Search for flight or aircraft"
+                  aria-label="Search for flight, airline code, or aircraft"
                 >
                   {isLoading ? (
                     <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
@@ -1026,7 +1273,7 @@ export default function FlightLookup() {
                     {/* All status badges completely removed */}
                   </div>
                   <div className="flex flex-wrap items-center gap-4 text-muted-foreground">
-                    <span>{flightData.airline?.name || 'N/A'}</span>
+                    <span>{flightData.airlineName || flightData.airline?.name || 'N/A'}</span>
                     <Separator orientation="vertical" className="h-4 hidden sm:block" />
                     <span>{flightData.aircraft || 'N/A'}</span>
                     <Separator orientation="vertical" className="h-4 hidden sm:block" />
@@ -1066,7 +1313,10 @@ export default function FlightLookup() {
                           Altitude
                         </div>
                         <div className="text-lg font-bold text-foreground">
-                          {flightData.altitude ? `${flightData.altitude} ft` : 'N/A'}
+                          {flightData.altitude ? (() => {
+                            const converted = convertAltitude(flightData.altitude, units.altitude)
+                            return `${converted.value} ${converted.unit}`
+                          })() : 'N/A'}
                         </div>
                       </div>
                     </Card>
@@ -1077,7 +1327,10 @@ export default function FlightLookup() {
                           Ground Speed
                         </div>
                         <div className="text-lg font-bold text-foreground">
-                          {flightData.groundSpeed ? `${flightData.groundSpeed} kt` : 'N/A'}
+                          {flightData.groundSpeed ? (() => {
+                            const converted = convertSpeed(flightData.groundSpeed, units.speed)
+                            return `${converted.value} ${converted.unit}`
+                          })() : 'N/A'}
                         </div>
                       </div>
                     </Card>
@@ -1098,8 +1351,12 @@ export default function FlightLookup() {
                           Vertical Speed
                         </div>
                         <div className="text-lg font-bold text-foreground">
-                          {flightData.verticalSpeed ? `${flightData.verticalSpeed} ft/min` : 'N/A'}
+                          {flightData.verticalSpeed != null ? (() => {
+                            const converted = convertVerticalSpeed(flightData.verticalSpeed, units.altitude)
+                            return `${converted.value} ${converted.unit}`
+                          })() : 'N/A'}
                         </div>
+
                       </div>
                     </Card>
 
@@ -1108,9 +1365,9 @@ export default function FlightLookup() {
                         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                           Position
                         </div>
-                        <div className="text-sm font-bold text-foreground">
+                        <div className="text-lg font-bold text-foreground font-mono">
                           {flightData.position?.lat && flightData.position?.lon 
-                            ? `${flightData.position.lat.toFixed(3)}, ${flightData.position.lon.toFixed(3)}`
+                            ? `${flightData.position.lat.toFixed(3)},${flightData.position.lon.toFixed(3)}`
                             : 'N/A'
                           }
                         </div>
@@ -1118,7 +1375,7 @@ export default function FlightLookup() {
                     </Card>
                   </div>
 
-                  {/* New data boxes for full API information */}
+                  {/* Essential data boxes */}
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-4">
                     <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
                       <div className="text-center space-y-2">
@@ -1141,43 +1398,11 @@ export default function FlightLookup() {
                       </div>
                     </Card>
 
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Origin IATA</div>
-                        <div className="text-lg font-bold text-foreground">{flightData.origin?.iata || 'N/A'}</div>
-                      </div>
-                    </Card>
 
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Origin ICAO</div>
-                        <div className="text-lg font-bold text-foreground">{flightData.origin?.icao || 'N/A'}</div>
-                      </div>
-                    </Card>
-
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Destination IATA</div>
-                        <div className="text-lg font-bold text-foreground">{flightData.destination?.iata || 'N/A'}</div>
-                      </div>
-                    </Card>
-
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Destination ICAO</div>
-                        <div className="text-lg font-bold text-foreground">{flightData.destination?.icao || 'N/A'}</div>
-                      </div>
-                    </Card>
-
-
-
-                    <Card className="p-4 bg-muted/20 border-border/50 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:shadow-md rounded-lg">
-                      <div className="text-center space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Operating As</div>
-                        <div className="text-lg font-bold text-foreground">{flightData.operatingAs || 'N/A'}</div>
-                      </div>
-                    </Card>
                   </div>
+
+                  {/* Weather Selector */}
+                  <WeatherSelector flightData={flightData} />
 
                   <div className="mt-4 pt-4 border-t border-border">
                     <div className="flex justify-center items-center text-sm">
@@ -1207,9 +1432,46 @@ export default function FlightLookup() {
                           Flight {flightData.callsign || 'N/A'}
                         </h2>
                         <div className="space-y-2 text-sm text-muted-foreground">
-                          <div><span className="font-semibold">Airline:</span> <span>{flightData.airline?.name || 'N/A'}</span></div>
+                          <div><span className="font-semibold">Airline:</span> <span>{flightData.airlineName || flightData.airline?.name || 'N/A'}</span></div>
                           <div><span className="font-semibold">Aircraft:</span> <span>{flightData.aircraft || 'N/A'}</span></div>
                           <div><span className="font-semibold">Route:</span> <span>{flightData.route || 'N/A'}</span></div>
+                          <div><span className="font-semibold">Phase:</span> <span className="text-[var(--color-primary)] font-medium">
+                            {(() => {
+                              const phase = flightCache.detectFlightPhase(flightData)
+                              console.log('Flight Data:', flightData)
+                              console.log('Detected Phase:', phase)
+                              console.log('Altitude:', flightData?.live?.altitude)
+                              console.log('Vertical Speed:', flightData?.live?.vertical_speed)
+                              let phaseText
+                              if (phase.phase === 'ground') {
+                                phaseText = 'Ground'
+                              } else if (phase.phase === 'short-final') {
+                                phaseText = 'Short Final'
+                              } else if (phase.phase === 'approach') {
+                                phaseText = 'Approach'
+                              } else if (phase.phase === 'descent') {
+                                phaseText = 'Descent'
+                              } else if (phase.phase === 'climb') {
+                                phaseText = 'Climb'
+                              } else if (phase.phase === 'maintain') {
+                                // For level flight under 30k feet, show the last known phase
+                                // This would need to be implemented with state management
+                                phaseText = 'Level Flight'
+                              } else {
+                                phaseText = 'Cruise'
+                              }
+                              return phaseText
+                            })()}
+                          </span></div>
+                          <div><span className="font-semibold">Time Left:</span> <span className={`font-medium ${(() => {
+                            const countdown = calculateFlightCountdown(flightData)
+                            return countdown.isDelayed ? 'text-red-500' : 'text-[var(--color-primary)]'
+                          })()}`}>
+                            {(() => {
+                              const countdown = calculateFlightCountdown(flightData)
+                              return countdown.timeLeft
+                            })()}
+                          </span></div>
                         </div>
                                         {/* Status badge removed */}
                       </div>
@@ -1222,24 +1484,7 @@ export default function FlightLookup() {
                     <CardTitle>Quick Actions</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    <div className="p-4 bg-muted/20 border-border/50 rounded-lg hover:border-[var(--color-primary)]/30 transition-all duration-200">
-                      <Button
-                        variant="outline"
-                        className="w-full justify-start bg-transparent hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:scale-102 rounded-lg text-foreground hover:text-foreground"
-                      >
-                        <MapPin className="h-4 w-4 mr-2" />
-                        View on Map
-                      </Button>
-                    </div>
-                    <div className="p-4 bg-muted/20 border-border/50 rounded-lg hover:border-[var(--color-primary)]/30 transition-all duration-200">
-                      <Button
-                        variant="outline"
-                        className="w-full justify-start bg-transparent hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:scale-102 rounded-lg text-foreground hover:text-foreground"
-                      >
-                        <Clock className="h-4 w-4 mr-2" />
-                        Flight History
-                      </Button>
-                    </div>
+
 
                     <Dialog open={jsonModalOpen} onOpenChange={setJsonModalOpen}>
                       <DialogTrigger asChild>
@@ -1315,6 +1560,39 @@ export default function FlightLookup() {
                         View on FlightRadar24
                       </Button>
                     </div>
+                    
+                    <div className="p-4 bg-muted/20 border-border/50 rounded-lg hover:border-[var(--color-primary)]/30 transition-all duration-200">
+                      <Button
+                        variant="outline"
+                        className="w-full justify-start bg-transparent hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/30 transition-all duration-200 hover:scale-102 rounded-lg text-foreground hover:text-foreground"
+                        onClick={() => {
+                          if (flightData?.registration) {
+                            const registration = flightData.registration
+                            const url = `https://www.planespotters.net/photos/reg/${registration}`
+                            
+                            // Copy to clipboard as backup
+                            try {
+                              navigator.clipboard.writeText(url)
+                            } catch (e) {
+                              console.error('Failed to copy to clipboard:', e)
+                            }
+                            
+                            // Create a temporary link element and click it (simulates user click)
+                            const link = document.createElement('a')
+                            link.href = url
+                            link.target = '_blank'
+                            link.rel = 'noopener noreferrer'
+                            document.body.appendChild(link)
+                            link.click()
+                            document.body.removeChild(link)
+                          }
+                        }}
+                        disabled={!flightData?.registration}
+                      >
+                        <ExternalLink className="h-4 w-4 mr-2" />
+                        View on Planespotters.net {!flightData?.registration && '(No Registration)'}
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
               </div>
@@ -1329,7 +1607,7 @@ export default function FlightLookup() {
             </div>
             <h3 className="text-xl font-semibold text-foreground mb-2">Ready to Track Flights</h3>
             <p className="text-muted-foreground max-w-md mx-auto">
-              Enter an active flight number or registration above to see real-time tracking data, flight status, and aircraft information. Press <kbd className="px-2 py-1 bg-muted rounded text-xs">/</kbd> to focus search.
+              Enter an active flight number, IATA/ICAO code, or registration above to see real-time tracking data, flight status, and aircraft information. Press <kbd className="px-2 py-1 bg-muted rounded text-xs">/</kbd> to focus search.
             </p>
           </div>
         )}
@@ -1365,7 +1643,6 @@ export default function FlightLookup() {
                     Flight Tracking
                   </span>
                 </div>
-                <br />
                 <div>
                   <a
                     href="https://www.flightradar24.com/37.08,-78.99/2"
@@ -1376,7 +1653,6 @@ export default function FlightLookup() {
                     Live Map
                   </a>
                 </div>
-                <br />
                 <div>
                   <a
                     href="https://www.flightradar24.com/data/flights"
@@ -1387,7 +1663,6 @@ export default function FlightLookup() {
                     Flight History
                   </a>
                 </div>
-                <br />
                 <div>
                   <a
                     href="https://www.planespotters.net/"
@@ -1398,7 +1673,6 @@ export default function FlightLookup() {
                     Aircraft Database
                   </a>
                 </div>
-                <br />
                 <div>
                   <a
                     href="https://fr24api.flightradar24.com/docs/endpoints/overview"
