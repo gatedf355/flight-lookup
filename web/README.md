@@ -1,26 +1,30 @@
-# Flight Lookup Frontend
+# Flight lookup UI
 
-This is the React + Vite frontend for the Flight Lookup application.
+*Automatically synced with your [v0.app](https://v0.app) deployments*
 
-## Development
+[![Deployed on Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-black?style=for-the-badge&logo=vercel)](https://vercel.com/gatedf355s-projects/v0-flight-lookup-ui)
+[![Built with v0](https://img.shields.io/badge/Built%20with-v0.app-black?style=for-the-badge)](https://v0.app/chat/projects/Mljd0KQyfAD)
 
-The app includes rich console logging for debugging. To enable verbose logs:
+## Overview
 
-1. Open DevTools (F12)
-2. In the Console, run: `localStorage.setItem('debug','1')`
-3. Refresh the page
+This repository will stay in sync with your deployed chats on [v0.app](https://v0.app).
+Any changes you make to your deployed app will be automatically pushed to this repository from [v0.app](https://v0.app).
 
-This will show grouped HTTP request/response logs, UI poll decisions, and global error traps.
+## Deployment
 
-## Technical Details
+Your project is live at:
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**[https://vercel.com/gatedf355s-projects/v0-flight-lookup-ui](https://vercel.com/gatedf355s-projects/v0-flight-lookup-ui)**
 
-Currently, two official plugins are available:
+## Build your app
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Continue building your app on:
 
-## Expanding the ESLint configuration
+**[https://v0.app/chat/projects/Mljd0KQyfAD](https://v0.app/chat/projects/Mljd0KQyfAD)**
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## How It Works
+
+1. Create and modify your project using [v0.app](https://v0.app)
+2. Deploy your chats from the v0 interface
+3. Changes are automatically pushed to this repository
+4. Vercel deploys the latest version from this repository

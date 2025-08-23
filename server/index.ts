@@ -1,33 +1,96 @@
+// ============================================================================
+// IMPORTS & ENVIRONMENT SETUP
+// ============================================================================
+
+import * as dotenv from 'dotenv';
+import { join } from "path";
+import { existsSync } from "fs";
 import express from "express";
 import { requestId } from "./middleware/requestId";
+import { limitFlightSearch } from "./middleware/limitFlightSearch";
 import { log } from "./logger";
-import dotenv from "dotenv";
 import axios from "axios";
-import { readFileSync } from "fs";
-import { join } from "path";
 import cors from "cors";
+import { withInflight } from './utils/cache';
+import progressRouter from './routes/progress';
 
-// Load environment variables
-dotenv.config({ path: join(__dirname, '..', '.env') });
+// ============================================================================
+// ENVIRONMENT VARIABLES
+// ============================================================================
+
+// Try multiple paths for .env file
+const envPaths = [
+  join(__dirname, '..', '.env'),           // Project root
+  join(__dirname, '.env'),                // Server directory
+  '.env'                                  // Current working directory
+];
+
+let envLoaded = false;
+for (const envPath of envPaths) {
+  if (existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+    console.log(`Environment variables loaded from: ${envPath}`);
+    envLoaded = true;
+    break;
+  }
+}
+
+if (!envLoaded) {
+  console.warn('No .env file found. Using system environment variables.');
+  dotenv.config();
+}
+
+// Validate required environment variables
+if (!process.env.FR24_API_KEY) {
+  console.error('ERROR: FR24_API_KEY environment variable is not set!');
+  console.error('Please create a .env file in the project root with: FR24_API_KEY=your_api_key_here');
+  process.exit(1);
+}
+
+// ============================================================================
+// CONFIGURATION CONSTANTS
+// ============================================================================
+
+const LIVE_TTL = Number(process.env.FR24_LIVE_TTL_MS ?? 30000);   // 30s
+const NEG_TTL  = Number(process.env.FR24_NEG_TTL_MS ?? 60000);   // 60s
+const MAX_PER_IDENT_WINDOW_MS = 20000; // don't call upstream more than once / 20s per ident
+const keyForThrottle = 'fr24:throttle';
+const lastCall = new Map<string, number>();
+
+// ============================================================================
+// EXPRESS APP SETUP
+// ============================================================================
 
 const app = express();
 app.use(cors());
 app.use(requestId);
 
-// Load airline code mapping
-let airlinesMap: Record<string, string> = {};
-try {
-      const airlinesPath = join(__dirname, '..', 'data', 'airlinesMap.json');
-  const airlinesData = readFileSync(airlinesPath, 'utf8');
-  airlinesMap = JSON.parse(airlinesData);
-  log("airlines.loaded", { count: Object.keys(airlinesMap).length });
-} catch (error) {
-  log("airlines.load.error", { error: (error as Error).message });
-}
+// Add response timeout middleware
+app.use((req, res, next) => {
+  res.setTimeout(8000, () => {
+    console.warn('Response timeout:', req.method, req.originalUrl);
+    if (!res.headersSent) res.status(504).json({ 
+      success: false,
+      error: 'upstream_timeout',
+      status: {
+        active: false,
+        text: 'TIMEOUT'
+      }
+    });
+  });
+  next();
+});
 
-// FlightRadar24 API client
+// Register progress route
+app.use("/api", progressRouter);
+
+// ============================================================================
+// FLIGHTRADAR24 API CLIENT
+// ============================================================================
+
 const fr24 = axios.create({
   baseURL: 'https://fr24api.flightradar24.com/api',
+  timeout: 7000, // 7 second timeout
   headers: {
     Authorization: `Bearer ${process.env.FR24_API_KEY}`,
     'Accept-Version': 'v1',
@@ -41,10 +104,159 @@ log("api.setup", {
   baseUrl: 'https://fr24api.flightradar24.com/api',
   apiKeyPrefix: process.env.FR24_API_KEY?.substring(0, 20) + '...',
   apiKeyLength: process.env.FR24_API_KEY?.length || 0,
-  envKeys: Object.keys(process.env).filter(key => key.includes('FR24'))
+  envKeys: Object.keys(process.env).filter(key => key.includes('FR24')),
+  envLoaded: envLoaded
 });
 
-// Types for Flightradar24 API responses
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+function normIdent(raw: string) {
+  return (raw || '').trim().toUpperCase();
+}
+
+// ============================================================================
+// HELPER FUNCTIONS FOR FLIGHT DATA ENRICHMENT
+// ============================================================================
+
+function getAirlineName(airlineCode: string | null): string | null {
+  if (!airlineCode) return null;
+  
+  const airlines: Record<string, string> = {
+    'DAL': 'Delta Air Lines',
+    'UAL': 'United Airlines',
+    'AAL': 'American Airlines',
+    'SWA': 'Southwest Airlines',
+    'ASA': 'Alaska Airlines',
+    'JBU': 'JetBlue Airways',
+    'FFT': 'Frontier Airlines',
+    'SKW': 'SkyWest Airlines',
+    'EDV': 'Endeavor Air',
+    'RPA': 'Republic Airways',
+    'JIA': 'PSA Airlines',
+    'ENY': 'Envoy Air',
+    'QXE': 'Horizon Air',
+    'PDT': 'Piedmont Airlines',
+    'CPZ': 'Compass Airlines',
+    'GJS': 'GoJet Airlines',
+    'MES': 'Mesa Airlines',
+    'CHQ': 'Chautauqua Airlines',
+    'COM': 'Comair',
+    'XJT': 'ExpressJet Airlines'
+  };
+  
+  return airlines[airlineCode.toUpperCase()] || `${airlineCode} Airlines`;
+}
+
+function getRouteFromPosition(lat: number, lon: number, track: number): string {
+  // Basic route estimation based on position and heading
+  if (lat > 45 && lon < -50 && track > 200 && track < 250) {
+    return 'Europe → United States';
+  } else if (lat > 40 && lat < 50 && lon > -80 && lon < -60) {
+    return 'United States Domestic';
+  } else if (lat > 30 && lat < 40 && lon > -120 && lon < -80) {
+    return 'United States Domestic';
+  } else if (lat > 50 && lon > 0 && lon < 20) {
+    return 'Europe Domestic';
+  } else if (lat > 20 && lat < 30 && lon > 100 && lon < 140) {
+    return 'Asia Domestic';
+  } else if (lat > -40 && lat < -20 && lon > 110 && lon < 155) {
+    return 'Australia Domestic';
+  }
+  
+  return 'International Flight';
+}
+
+// ============================================================================
+// FLIGHTRADAR24 API FUNCTIONS
+// ============================================================================
+
+async function fr24LiveLookup({ ident, flightId, full = false, searchType = 'callsign' }: { ident?: string; flightId?: string; full?: boolean; searchType?: 'callsign' | 'registration' }) {
+  const params: any = {};
+  if (flightId) params.flight = flightId;
+  else if (ident) {
+    if (searchType === 'registration') {
+      params.registrations = ident; // FR24 uses 'registrations' for registration searches
+    } else {
+      params.callsigns = ident; // FR24 requires 'callsigns' (plural) for callsign searches
+    }
+  }
+  params.limit = 50;
+
+  // Use the same endpoint for both search types
+  const endpoint = '/live/flight-positions/full';
+  
+  // Add debugging for the API call
+  console.log('=== FR24 API CALL DEBUG ===');
+  console.log('Search type:', searchType);
+  console.log('Endpoint:', endpoint);
+  console.log('Params:', params);
+  console.log('Full URL:', `${fr24.defaults.baseURL}${endpoint}`);
+  
+  try {
+    const res = await fr24.get(endpoint, { params, validateStatus: () => true });
+    console.log('FR24 API Response Status:', res.status);
+    console.log('FR24 API Response Headers:', res.headers);
+    console.log('FR24 API Response Data:', JSON.stringify(res.data, null, 2));
+    
+    const retryAfter = Number(res.headers['retry-after']);
+    if (res.status === 429) {
+      const detail = retryAfter ? `Retry after ${retryAfter}s` : 'Rate limited';
+      const err: any = new Error('Rate limited');
+      err.code = 429; err.detail = detail; err.retryAfter = retryAfter;
+      throw err;
+    }
+    if (res.status === 401 || res.status === 403) {
+      const err: any = new Error('Auth failed');
+      err.code = 502; err.detail = `HTTP ${res.status}`;
+      throw err;
+    }
+    if (res.status >= 500) {
+      const err: any = new Error('Upstream error');
+      err.code = 502; err.detail = `HTTP ${res.status}`;
+      throw err;
+    }
+    if (res.status === 404) return { data: [] };
+
+    return res.data; // expected shape: { data: [...] }
+  } catch (error: any) {
+    console.error('FR24 API call failed:', error);
+    return {
+      error: error.message,
+      code: error.code,
+      response: error.response?.data
+    };
+  }
+}
+
+async function fr24FlightSummary({ ident }: { ident: string }) {
+  try {
+    // Get flight summary from FR24 using the correct endpoint
+    const res = await fr24.get('/flights', { 
+      params: { query: ident, limit: 1 },
+      validateStatus: () => true 
+    });
+    
+    console.log('=== FR24 FLIGHT SUMMARY DEBUG ===');
+    console.log('Flight Summary Response Status:', res.status);
+    console.log('Flight Summary Response Data:', JSON.stringify(res.data, null, 2));
+    
+    if (res.status === 200 && res.data?.result?.response?.data?.length > 0) {
+      return res.data.result.response.data[0];
+    }
+    
+    return null;
+  } catch (error: any) {
+    console.error('FR24 Flight Summary API call failed:', error);
+    return null;
+  }
+}
+
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
+
 interface FlightSummaryEntry {
   fr24_id?: string;
   flight?: string;
@@ -76,24 +288,15 @@ interface FlightInfo {
   destinationName?: string;
 }
 
-// Helper function to derive callsign from flight number
-function deriveCallsignFromFlightNumber(flightNumber: string): string | null {
-  const match = flightNumber.match(/^([A-Za-z]+)(\d+)/);
-  if (!match) return null;
-  
-  const iata = match[1].toUpperCase();
-  const digits = match[2];
-  const icaoPrefix = airlinesMap[iata] || iata;
-  return icaoPrefix + digits;
-}
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
 
-// Helper function to sanitize query parameters
 function sanitizeQueryParam(param: string): string {
   if (!param) return "";
   return param.replace(/\s+/g, "%20");
 }
 
-// Helper function to format time window for search
 function getTimeWindow(hours: number = 36): { from: string; to: string } {
   const now = new Date();
   // Look back 10 days and forward 4 days to stay within 14-day API limit
@@ -106,124 +309,9 @@ function getTimeWindow(hours: number = 36): { from: string; to: string } {
   };
 }
 
-// Fetch flight track data
-async function fetchFlightTrack(fr24Id: string): Promise<Position[]> {
-  try {
-    const { data } = await fr24.get('/flight-tracks', { 
-      params: { flight_id: fr24Id } 
-    });
-    
-    const trackArray = data?.data?.[0]?.track;
-    if (Array.isArray(trackArray)) {
-      return trackArray.map((point: any) => ({
-        lat: point.lat,
-        lon: point.lon,
-        altitude: point.alt || point.altitude,
-        time: point.time || point.timestamp
-      }));
-    }
-  } catch (error: any) {
-    log("track.fetch.error", { fr24Id, error: error.message });
-  }
-  return [];
-}
-
-// Enrich flight info with names
-async function enrichFlightInfoNames(flightInfo: FlightInfo): Promise<void> {
-  const summary = flightInfo.summary;
-  if (!summary) return;
-
-  try {
-    // Get airline name
-    if (summary.callsign) {
-      const airlineIcao = summary.callsign.substring(0, Math.min(3, summary.callsign.length));
-      const { data: airlineData } = await fr24.get(`/static/airlines/${airlineIcao}/light`);
-      if (airlineData?.name) {
-        flightInfo.airlineName = airlineData.name;
-      }
-    }
-
-    // Get origin airport name
-    if (summary.orig_icao) {
-      const { data: airportData } = await fr24.get(`/static/airports/${summary.orig_icao}/light`);
-      if (airportData?.name) {
-        flightInfo.originName = airportData.name;
-      } else if (airportData?.data?.name) {
-        flightInfo.originName = airportData.data.name;
-      }
-    }
-
-    // Get destination airport name
-    if (summary.dest_icao) {
-      const { data: airportData } = await fr24.get(`/static/airports/${summary.dest_icao}/light`);
-      if (airportData?.name) {
-        flightInfo.destinationName = airportData.data.name;
-      } else if (airportData?.data?.name) {
-        flightInfo.destinationName = airportData.data.name;
-      }
-    }
-  } catch (error: any) {
-    log("enrich.names.error", { error: error.message });
-  }
-}
-
-// Find live flight by callsign
-async function findLiveFlightByCallsign(callsign: string): Promise<FlightInfo | null> {
-  try {
-    const { data } = await fr24.get('/live/flight-positions/light', {
-      params: { callsign: sanitizeQueryParam(callsign) }
-    });
-
-    if (!data || (Array.isArray(data) && data.length === 0)) {
-      return null;
-    }
-
-    const flightNode = Array.isArray(data) ? data[0] : data;
-    
-    // Build summary from live data
-    const summary: FlightSummaryEntry = {
-      callsign: flightNode.callsign,
-      flight: undefined, // Will derive from callsign
-      orig_icao: undefined,
-      dest_icao: undefined,
-      datetime_takeoff: undefined,
-      datetime_landed: undefined,
-      flight_ended: false,
-      reg: flightNode.reg || flightNode.registration,
-      type: flightNode.type
-    };
-
-    // Derive flight number from callsign if possible
-    if (summary.callsign) {
-      const match = summary.callsign.match(/^([A-Za-z]+)(\d+)/);
-      if (match) {
-        const csPrefix = match[1];
-        const csDigits = match[2];
-        // Find IATA code from ICAO
-        const iataCode = Object.keys(airlinesMap).find(key => airlinesMap[key] === csPrefix);
-        summary.flight = (iataCode || csPrefix) + csDigits;
-      }
-    }
-
-    const flightInfo: FlightInfo = { summary };
-    
-    // Build position from live data
-    const position: Position = {
-      lat: flightNode.lat,
-      lon: flightNode.lon,
-      altitude: flightNode.alt,
-      time: flightNode.updated
-    };
-    
-    flightInfo.lastPosition = position;
-    flightInfo.track = [position];
-    
-    return flightInfo;
-  } catch (error: any) {
-    log("live.flight.error", { callsign, error: error.message });
-    return null;
-  }
-}
+// ============================================================================
+// API ENDPOINTS
+// ============================================================================
 
 // Health check endpoint
 app.get("/api/health", (req, res) => {
@@ -232,152 +320,273 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true, ts: Date.now() });
 });
 
-// Flight lookup endpoint with comprehensive Flightradar24 integration
-app.get('/api/flight', async (req, res) => {
-  const id = (req as any).id;
-  const flightNumber = (req.query.number as string || '').trim();
-  const callsign = (req.query.callsign as string || '').trim();
-  
-  if (!flightNumber && !callsign) {
-    return res.status(400).json({ 
-      error: "Missing 'number' or 'callsign' query parameter." 
-    });
-  }
-
+// Canonical flight lookup endpoint with caching and rate limiting
+app.get('/api/flight', limitFlightSearch(30_000, 10_000), async (req, res) => {
   try {
-    log("flight.lookup", { id, flightNumber, callsign });
+    console.log('=== REQUEST DEBUG ===');
+    console.log('Query params:', req.query);
+    console.log('Number:', req.query.number);
+    console.log('Callsign:', req.query.callsign);
+    console.log('Registration:', req.query.registration);
+    console.log('Ident:', req.query.ident);
+    console.log('SearchType:', req.query.searchType);
     
-    let searchFlight: string;
-    let targetCallsign: string | undefined;
+    const identRaw = (req.query.number as string) || (req.query.callsign as string) || (req.query.registration as string) || (req.query.ident as string) || '';
+    const ident = identRaw.trim().toUpperCase();
+    const full = req.query.full === 'true';
+    const searchTypeRaw = (req.query.searchType as string) || 'callsign';
+    const searchType: 'callsign' | 'registration' = searchTypeRaw === 'registration' ? 'registration' : 'callsign';
     
-    if (flightNumber) {
-      searchFlight = flightNumber;
-      targetCallsign = deriveCallsignFromFlightNumber(flightNumber) || undefined;
-    } else {
-      searchFlight = callsign;
-      targetCallsign = callsign;
-    }
-
-    // Prepare time window for search - use 14 days (10 back + 4 forward) to increase chances of finding flights
-    const timeWindow = getTimeWindow(); // 14 days total (within API limit)
+    console.log('=== FLIGHT SEARCH DEBUG ===');
+    console.log('Search query:', ident);
+    console.log('Search type:', searchType);
+    console.log('Full data requested:', full);
     
-    // Build Flight Summary API URL
-    const summaryUrl = `/flight-summary/light?flights=${sanitizeQueryParam(searchFlight)}&flight_datetime_from=${timeWindow.from}&flight_datetime_to=${timeWindow.to}`;
-    log("flight.summary.url", { summaryUrl, searchFlight, timeWindow });
-    
-    let flightInfo: FlightInfo | null = null;
-    let summaries: FlightSummaryEntry[] = [];
-
-    try {
-      const { data } = await fr24.get(summaryUrl);
-      const summaryData = data?.data;
-      
-      if (Array.isArray(summaryData)) {
-        summaries = summaryData;
-      }
-    } catch (error: any) {
-      if (error.response?.status === 403) {
-        log("flight.summary.forbidden", { id, searchFlight });
-        return res.status(403).json({ 
-          error: "Not permitted to access flight summary endpoint (API plan limit)." 
-        });
-      }
-      log("flight.summary.error", { id, searchFlight, error: error.message });
-    }
-
-    if (summaries.length > 0) {
-      log("flight.summary.results", { id, count: summaries.length });
-      
-      // Sort by takeoff time and pick the latest
-      summaries.sort((a, b) => {
-        const aTime = a.datetime_takeoff ? new Date(a.datetime_takeoff).getTime() : 0;
-        const bTime = b.datetime_takeoff ? new Date(b.datetime_takeoff).getTime() : 0;
-        return aTime - bTime;
-      });
-      
-      const best = summaries[summaries.length - 1];
-      log("flight.summary.found", { 
-        id, 
-        flight: best.flight, 
-        origin: best.orig_icao, 
-        destination: best.dest_icao,
-        takeoff: best.datetime_takeoff
-      });
-      
-      flightInfo = { summary: best };
-      
-      // Enrich with names
-      await enrichFlightInfoNames(flightInfo);
-      
-      // Get track data if available
-      if (best.fr24_id) {
-        const track = await fetchFlightTrack(best.fr24_id);
-        flightInfo.track = track;
-        if (track.length > 0) {
-          flightInfo.lastPosition = track[track.length - 1];
+    if (!ident) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Provide ?number=, ?callsign=, ?registration=, or ?ident=',
+        status: {
+          active: false,
+          text: 'BAD_REQUEST'
         }
-      }
-    } else {
-      log("flight.summary.no.results", { id, searchFlight, timeWindow });
-    }
-
-    // Fallback to live data if no summary found
-    if (!flightInfo && targetCallsign) {
-      log("flight.live.fallback", { id, callsign: targetCallsign });
-      flightInfo = await findLiveFlightByCallsign(targetCallsign);
-      
-      if (flightInfo) {
-        log("flight.live.found", { 
-          id, 
-          callsign: targetCallsign,
-          lat: flightInfo.lastPosition?.lat,
-          lon: flightInfo.lastPosition?.lon
-        });
-      }
-    }
-
-    if (!flightInfo) {
-      return res.status(404).json({ 
-        error: `Flight ${searchFlight} not found.` 
       });
     }
 
-    res.json(flightInfo);
+    const cacheKey = `flight:${ident}:${searchType}:${full}`;
     
-  } catch (error: any) {
-    log("flight.lookup.error", { id, error: error.message });
-    res.status(502).json({ 
-      error: "Flight data lookup failed. Please try again later.",
-      detail: error.message 
+    // single inflight per key
+    const result = await withInflight(cacheKey, async () => {
+      lastCall.set(keyForThrottle, Date.now());
+      
+      // Direct FlightRadar24 API call - no filtering, no complex logic
+      const liveData = await fr24LiveLookup({ ident, full, searchType });
+      
+      console.log('=== FR24 RESPONSE DEBUG ===');
+      console.log('FR24 returned data:', liveData);
+      
+      // If FR24 returns any data, return it directly
+      if (liveData && liveData.data && liveData.data.length > 0) {
+        console.log('✅ Flight found, returning raw FR24 data');
+        const rawData = liveData.data[0];
+        
+        // Enhanced response with full API data
+        return {
+          success: true,
+          callsign: rawData.callsign,
+          fr24_id: rawData.fr24_id,
+          flight: rawData.flight,
+          
+          // Aircraft information from full API
+          aircraft: rawData.type || 'Aircraft Type Unknown',
+          registration: rawData.reg || null,
+          hex: rawData.hex || null,
+          
+          // Airline information
+          airline: rawData.painted_as || rawData.callsign?.substring(0, 3) || null,
+          airlineName: getAirlineName(rawData.painted_as || rawData.callsign?.substring(0, 3)),
+          operatingAs: rawData.operating_as || null,
+          
+          // Route information from full API
+          origin: {
+            iata: rawData.orig_iata || null,
+            icao: rawData.orig_icao || null
+          },
+          destination: {
+            iata: rawData.dest_iata || null,
+            icao: rawData.dest_icao || null
+          },
+          eta: rawData.eta || null,
+          
+          // Position data
+          lastPosition: {
+            lat: rawData.lat,
+            lon: rawData.lon,
+            alt: rawData.alt,
+            altitude: rawData.alt,
+            speed: rawData.gspeed,
+            groundSpeed: rawData.gspeed,
+            track: rawData.track,
+            squawk: rawData.squawk,
+            timestamp: rawData.timestamp,
+            time: rawData.timestamp,
+            verticalSpeed: rawData.vspeed,
+            vspeed: rawData.vspeed
+          },
+          
+          // Additional data from full API
+          source: rawData.source || null,
+          
+          // Backward compatibility fields
+          lat: rawData.lat,
+          lon: rawData.lon,
+          alt: rawData.alt,
+          altitude: rawData.alt,
+          speed: rawData.gspeed,
+          groundSpeed: rawData.gspeed,
+          track: rawData.track,
+          squawk: rawData.squawk,
+          timestamp: rawData.timestamp,
+          time: rawData.timestamp,
+          
+          // Include all raw data for debugging
+          ...rawData
+        };
+      } else {
+        console.log('❌ No flight data returned from FR24');
+        return null;
+      }
+    });
+
+    if (result) {
+      console.log('✅ Sending flight data to client');
+      // Wrap the result in the expected format that the UI checks for
+      const normalized = {
+        success: true,
+        status: {
+          active: true,
+          text: result.status?.text || 'ACTIVE'
+        },
+        flight: result,
+        result: {
+          active: true
+        },
+        raw: result,
+        ...result  // Keep all the original fields for backward compatibility
+      };
+      res.json(normalized);
+    } else {
+      console.log('❌ No flight data to send, returning 404');
+      res.status(404).json({ 
+        success: false,
+        error: 'Flight not found',
+        status: {
+          active: false,
+          text: 'NOT_FOUND'
+        }
+      });
+    }
+  } catch (err: any) {
+    console.error('Flight search error:', err);
+    res.status(500).json({ 
+      success: false,
+      error: err.message || 'Internal server error',
+      status: {
+        active: false,
+        text: 'ERROR'
+      }
     });
   }
 });
 
-// Live flight positions endpoint (working example from requirements)
-app.get("/api/live/positions", async (req, res) => {
-  const id = (req as any).id;
-  const { bounds, limit = 10 } = req.query;
-  if (!bounds) return res.status(400).json({ error: "bounds parameter required (N,S,E,W)" });
-  
+// Test flight endpoint for debugging route progress
+app.get('/api/test-flight', (req, res) => {
+  res.json({
+    success: true,
+    status: {
+      active: true,
+      text: 'TEST'
+    },
+    flight: {
+      summary: {
+        callsign: "TEST123",
+        fr24_id: "test123",
+        status: "ENROUTE",
+        orig_icao: "LTFM",
+        dest_icao: "KJFK"
+      },
+      lastPosition: {
+        lat: 65.577,
+        lon: -12.428,
+        altitude: "FL369",
+        groundSpeed: "454 kt",
+        verticalSpeed: "+320 ft/min",
+        track: "298°",
+        squawk: "2731",
+        type: "Boeing 777-300ER",
+        timestamp: Date.now() - 120000
+      },
+      fr24: { data: [] }
+    },
+    result: {
+      active: true
+    }
+  });
+});
+
+// Basic airports endpoint for route progress calculation
+app.get('/api/airports', (req, res) => {
   try {
-    log("live.positions", { id, bounds, limit });
-    const { data } = await fr24.get('/live/flight-positions/light', { 
-      params: { bounds, limit } 
+    const icaos = (req.query.icaos as string)?.split(',').filter(Boolean) || [];
+    
+    if (!icaos.length) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Provide ?icaos=KJFK,KLAX',
+        status: {
+          active: false,
+          text: 'BAD_REQUEST'
+        }
+      });
+    }
+
+    // Import flight utilities from JSON file
+    const flightUtils = require('./flight-utils.json');
+    const airportsDatabase = flightUtils.airports;
+
+    // Debug logging
+    console.log('=== AIRPORTS DEBUG ===');
+    console.log('Requested ICAOs:', icaos);
+    console.log('Database has YSSY?', !!airportsDatabase['YSSY']);
+    console.log('Database has YBBN?', !!airportsDatabase['YBBN']);
+    console.log('YSSY coords:', airportsDatabase['YSSY']);
+    console.log('YBBN coords:', airportsDatabase['YBBN']);
+    console.log('Total airports in database:', Object.keys(airportsDatabase).length);
+
+    // Look up requested airports
+    const result: Record<string, { lat: number; lon: number } | undefined> = {};
+    
+    for (const icao of icaos) {
+      result[icao] = airportsDatabase[icao] || undefined;
+    }
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('Airports error:', err);
+    res.status(500).json({ 
+      success: false,
+      error: err.message || 'Internal server error',
+      status: {
+        active: false,
+        text: 'ERROR'
+      }
     });
-    res.json(data);
-  } catch (e: any) {
-    log("live.positions.error", { id, message: e?.message });
-    res.status(502).json({ error: "upstream error", detail: e?.message });
   }
 });
 
-// final error guard
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+// Final error guard
 app.use((err: any, req: any, res: any, _next: any) => {
   const id = req?.id;
   // eslint-disable-next-line no-console
   console.error("fatal.unhandled", id, err);
-  res.status(500).json({ requestId: id, error: "UNHANDLED" });
+  res.status(500).json({ 
+    success: false,
+    requestId: id, 
+    error: "UNHANDLED",
+    status: {
+      active: false,
+      text: 'FATAL_ERROR'
+    }
+  });
 });
+
+// ============================================================================
+// SERVER STARTUP
+// ============================================================================
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {

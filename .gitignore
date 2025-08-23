@@ -12,3 +12,13 @@ target/
 out/
 *.log
 .DS_Store
+
+# local junk / build / backups
+_backup/
+flight-lookup-redesign*/
+**/.next/
+
+# local junk / build / backups
+_backup/
+flight-lookup-redesign*/
+**/.next/
