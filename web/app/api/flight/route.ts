@@ -13,7 +13,7 @@ export async function GET(request: Request) {
   let searchCallsign = callsign;
   let originalQuery = callsign;
   
-    // Check if input starts with a 2-3 character IATA airline code
+  // Check if input starts with a 2-3 character IATA airline code
   const airlineCodeMatch = callsign.match(/^([A-Z]{2,3})/);
   if (airlineCodeMatch) {
     const airlineCode = airlineCodeMatch[1];
@@ -28,7 +28,6 @@ export async function GET(request: Request) {
       searchCallsign = `${airline.icao}${flightNumber}`;
       console.log(`Converting IATA code "${airlineCode}" to ICAO callsign "${searchCallsign}" (original: "${callsign}")`);
     }
-  }
   }
 
   // Call the Cloudflare Worker backend directly
